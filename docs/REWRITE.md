@@ -139,6 +139,34 @@ The spike test was a copy of each module's Northwind engine test; it is not kept
 5. **Where the input is parsed.** Done: `KQLReader` parses the query and the rewriter splices the *text* of the
    source graph, the row filters and the group keys, so what the user wrote is what is copied.
 
+## The plain form (no layers)
+
+The layers exist because a join can repeat the rows of the measure's table. When it cannot, they only
+cost: a `SELECT DISTINCT` over the whole join, a regrouping, and CTEs that hide the query from the
+optimiser. The rewriter then emits the user's own query with each measure written out as its
+aggregate:
+
+```
+FIND emp e, e VIA same_department dept d
+FETCH d.dname dname, agg(e.sum_sal) sumsal   ->   FETCH d.dname dname, sum(e.sal) sumsal
+```
+
+It does so when **all** of these hold, and otherwise keeps the layers (the general form is always
+correct; the plain form is an optimisation, never a different meaning):
+
+- one table alias has measures, no `ROLLUP`;
+- every link is an inner link written without a column list (`VIA name` or the default);
+- walking the links away from the measure's alias, each one leads to one row of the other table:
+  the columns compared on the far side are its whole primary key, in every relation between the two
+  tables (the link a query means is not decided here, so all of them must say so), none of them a
+  range join. A self-join, an alias that is not an entity, and a table without a primary key are
+  never plain.
+
+`AggRewriter.layered()` returns a rewriter that never takes the shortcut. `FixturesTest` runs every
+query of the corpus both ways on the database and requires the same rows, so a wrong decision fails a
+test. Unique indexes are not used yet (only the primary key), and outer links and several measure
+tables always keep the layers.
+
 ## Outer links
 
 An optional link (`+`, and `FULL`) is copied into every layer with the rest of the graph. A layer then holds a NULL-padded

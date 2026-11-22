@@ -75,6 +75,7 @@ public final class AggRewriter {
     private final MeasureCatalog measures;
     private final ConceptResolver concepts;
     private final FunctionCatalog functions;
+    private final boolean shortcuts;
 
     /** With koryki's standard function catalog: what is an aggregate is decided there. */
     public AggRewriter(Schema schema, Model model, MeasureCatalog measures) {
@@ -87,11 +88,30 @@ public final class AggRewriter {
      */
     public AggRewriter(
             Schema schema, Model model, MeasureCatalog measures, FunctionCatalog functions) {
+        this(schema, model, measures, functions, true);
+    }
+
+    private AggRewriter(
+            Schema schema,
+            Model model,
+            MeasureCatalog measures,
+            FunctionCatalog functions,
+            boolean shortcuts) {
+        this.shortcuts = shortcuts;
         this.functions = functions;
         this.schema = schema;
         this.model = model;
         this.measures = measures;
         this.concepts = new ConceptResolver(schema);
+    }
+
+    /**
+     * The same rewriter without the plain form for queries that cannot fan out (see {@code
+     * fanOutFree}): every query gets the layers. The two forms must give the same rows; this is the
+     * general form to compare the shortcut against, and the way out should it ever be wrong.
+     */
+    public AggRewriter layered() {
+        return new AggRewriter(schema, model, measures, functions, false);
     }
 
     private KQLParser.QueryContext parse(String text) {
@@ -288,6 +308,7 @@ public final class AggRewriter {
         final Measure measure;
         final int n;
         String expression; // over the layer: bare names replaced by x.cN
+        String direct; // over the table's own alias: bare names replaced by alias.attribute
         String nullOf;
         KQLParser.FunctionContext call; // the first agg(...) that reads it, for the source map
 
@@ -316,6 +337,8 @@ public final class AggRewriter {
         private boolean outer;
         // FETCH ROLLUP: one evaluation per grouping set, the keys dropped from the right.
         private boolean rollup;
+        // the query needs no layers: see fanOutFree()
+        private boolean direct;
         private final List<KQLParser.FieldContext> keyFields = new ArrayList<>();
 
         // the names of its blocks, so that several selects of one query do not clash
@@ -430,6 +453,7 @@ public final class AggRewriter {
             }
             focus = select;
             prepare();
+            direct = shortcuts && !rollup && fanOutFree();
             return new Rewritten(
                     build(items, keyOf, keys, rows, having), columns, List.of(), null, List.of());
         }
@@ -594,7 +618,8 @@ public final class AggRewriter {
                 }
                 for (Use u : layer.uses) {
                     KQLParser.ExpressionContext e = parsed(u.measure);
-                    u.expression = expression(layer, e);
+                    u.expression = expression(layer, e, false);
+                    u.direct = expression(layer, e, true);
                     u.nullOf = nullOf(layer, u, e);
                 }
             }
@@ -651,7 +676,7 @@ public final class AggRewriter {
         }
 
         /** The measure expression with its bare column names replaced by columns of the layer. */
-        private String expression(Layer layer, KQLParser.ExpressionContext e) {
+        private String expression(Layer layer, KQLParser.ExpressionContext e, boolean direct) {
             // The pieces of the text to replace: a bare column name becomes a column of the layer;
             // with an optional link in the query, count() becomes the count of the identity, so
             // that
@@ -662,14 +687,14 @@ public final class AggRewriter {
             List<KQLParser.ParamContext> params = new ArrayList<>();
             collect(e, KQLParser.ParamContext.class, params);
             for (var p : params) {
-                String col = layer.arg(attribute(layer, p.getText()).getName());
+                String name = attribute(layer, p.getText()).getName();
                 pieces.add(
                         new Piece(
                                 p.start.getStartIndex() - base,
                                 p.stop.getStopIndex() - base + 1,
-                                "x." + col));
+                                direct ? layer.alias + "." + name : "x." + layer.arg(name)));
             }
-            if (outer) {
+            if (outer && !direct) {
                 List<KQLParser.FunctionContext> fns = new ArrayList<>();
                 collect(e, KQLParser.FunctionContext.class, fns);
                 for (var f : fns) {
@@ -690,7 +715,149 @@ public final class AggRewriter {
                 sb.append(src, at, p.from()).append(p.with());
                 at = p.to();
             }
-            return sb.append(src.substring(at)).toString();
+            sb.append(src.substring(at));
+            // in the middle of the user's own expression (agg(a) * 2): keep the measure in one
+            // piece
+            boolean call = e.function() != null && e.getChildCount() == 1;
+            return direct && !call ? "(" + sb + ")" : sb.toString();
+        }
+
+        /**
+         * Whether the rows of the measure's table are each counted once by the plain query, so that
+         * the layers (the distinct layer, the aggregate block, the outer regrouping) add nothing
+         * and the query can aggregate the joined rows directly.
+         *
+         * <p>That holds when there is one table with measures, only inner links, and every link,
+         * walked away from that table, leads to <em>one</em> row of the other table: the columns it
+         * compares on the other side are that table's whole primary key. A row of the measure's
+         * table then meets at most one row of each other table, whatever the query filters or
+         * groups by. Anything this cannot show (an explicit column list, a link that is a range
+         * join, a self-join, a relation that is not on the other side's primary key, an alias that
+         * is not an entity) leaves the layers in place: the plain form is an optimisation, never a
+         * different meaning.
+         */
+        private boolean fanOutFree() {
+            if (layers.size() != 1 || outer) {
+                return false;
+            }
+            String home = layers.values().iterator().next().alias;
+            record Edge(String from, String to) {}
+            List<Edge> edges = new ArrayList<>();
+            String previous =
+                    select.source().alias == null ? null : select.source().alias.getText();
+            for (var link : select.link()) {
+                if (link.kind != null || link.source().alias == null || previous == null) {
+                    return false; // CROSS, FULL, + (outer is set for the last two, CROSS here)
+                }
+                var j = link.join();
+                if (j != null && j.VIA() == null) {
+                    return false; // columns written out: the relation is not the catalog's
+                }
+                String to = link.source().alias.getText();
+                edges.add(new Edge(link.from != null ? link.from.getText() : previous, to));
+                previous = to;
+            }
+            if (!entityOfAlias.containsKey(home)) {
+                return false;
+            }
+            // walk the tree from the home alias; every alias is reached once, by one link
+            java.util.Set<String> seen = new java.util.HashSet<>(List.of(home));
+            List<Edge> todo = new ArrayList<>(edges);
+            boolean progress = true;
+            while (!todo.isEmpty() && progress) {
+                progress = false;
+                for (var it = todo.iterator(); it.hasNext(); ) {
+                    Edge ed = it.next();
+                    boolean forward = seen.contains(ed.from()) && !seen.contains(ed.to());
+                    boolean backward = seen.contains(ed.to()) && !seen.contains(ed.from());
+                    if (!forward && !backward) {
+                        continue;
+                    }
+                    String near = forward ? ed.from() : ed.to();
+                    String far = forward ? ed.to() : ed.from();
+                    if (!toOne(near, far)) {
+                        return false;
+                    }
+                    seen.add(far);
+                    it.remove();
+                    progress = true;
+                }
+            }
+            return todo.isEmpty() && seen.size() == entityOfAlias.size();
+        }
+
+        private String tableOfAlias(String alias) {
+            String entityName = entityOfAlias.get(alias);
+            if (entityName == null) {
+                return null;
+            }
+            return model.getEntities().stream()
+                    .filter(en -> entityName.equalsIgnoreCase(en.getName()))
+                    .findFirst()
+                    .map(en -> en.getTable() != null ? en.getTable() : en.getName())
+                    .orElse(null);
+        }
+
+        /**
+         * Whether a row of alias {@code near} meets at most one row of alias {@code far}, over
+         * whichever relation the query's link may mean: every relation between the two tables must
+         * say so, because which of them the link picks is not decided here.
+         */
+        private boolean toOne(String near, String far) {
+            String a = tableOfAlias(near);
+            String b = tableOfAlias(far);
+            if (a == null || b == null || a.equalsIgnoreCase(b)) {
+                return false;
+            }
+            Table target = null;
+            for (Table t : schema.getTables()) {
+                if (b.equalsIgnoreCase(t.getName())) {
+                    target = t;
+                }
+            }
+            if (target == null) {
+                return false;
+            }
+            List<String> pk =
+                    target.getColumns().stream()
+                            .filter(c -> c.getPkPos() > 0)
+                            .map(c -> c.getName().toLowerCase())
+                            .toList();
+            if (pk.isEmpty()) {
+                return false;
+            }
+            boolean found = false;
+            for (var r : schema.getRelations()) {
+                boolean ab =
+                        a.equalsIgnoreCase(r.getStartTable())
+                                && b.equalsIgnoreCase(r.getEndTable());
+                boolean ba =
+                        b.equalsIgnoreCase(r.getStartTable())
+                                && a.equalsIgnoreCase(r.getEndTable());
+                if (!ab && !ba) {
+                    continue;
+                }
+                found = true;
+                if (r.getCondition() != null) {
+                    return false; // a range join: any number of rows
+                }
+                // the columns on the far side must be the whole primary key; a symmetric relation
+                // can be read both ways, so both sides must be
+                if (ab && !covers(r.getEndColumns(), pk)) {
+                    return false;
+                }
+                if ((ba || r.isSymmetric()) && !covers(r.getStartColumns(), pk)) {
+                    return false;
+                }
+            }
+            return found;
+        }
+
+        private boolean covers(List<String> columns, List<String> pk) {
+            return columns.stream()
+                    .map(String::toLowerCase)
+                    .collect(java.util.stream.Collectors.toSet())
+                    .containsAll(pk);
         }
 
         private String nullOf(Layer layer, Use u, KQLParser.ExpressionContext e) {
@@ -778,6 +945,9 @@ public final class AggRewriter {
                 List<String> keys,
                 List<String> rows,
                 List<KQLParser.Logical_expressionContext> having) {
+            if (direct) {
+                return buildDirect(items, keyOf, rows, having);
+            }
             StringBuilder sb = new StringBuilder("WITH\n");
             String graph = graph();
             String filter = rows.isEmpty() ? "" : "\n FILTER " + String.join(" AND ", rows);
@@ -908,6 +1078,36 @@ public final class AggRewriter {
             return sb.toString();
         }
 
+        /**
+         * The query without layers: the user's own graph, the measures written out as aggregates.
+         */
+        private String buildDirect(
+                List<KQLParser.FetchItemContext> items,
+                Map<KQLParser.FetchItemContext, Integer> keyOf,
+                List<String> rows,
+                List<KQLParser.Logical_expressionContext> having) {
+            StringBuilder sb = new StringBuilder(graph());
+            List<String> conditions = new ArrayList<>(rows);
+            for (var part : having) {
+                String text = replaceAggs(part);
+                conditions.add(part.unary_logical_expression() != null ? text : "(" + text + ")");
+            }
+            if (!conditions.isEmpty()) {
+                sb.append("\n FILTER ").append(String.join(" AND ", conditions));
+            }
+            List<String> out = new ArrayList<>();
+            for (var item : items) {
+                out.add(outerItem(item, keyOf));
+            }
+            sb.append("\n FETCH ").append(String.join(", ", out));
+            if (select.limitClause() != null) {
+                sb.append("\n ").append(copy(select.limitClause()));
+            }
+            this.blocks = List.of();
+            this.finalQuery = sb.toString();
+            return finalQuery;
+        }
+
         private String graph() {
             ParserRuleContext last =
                     select.link().isEmpty()
@@ -951,7 +1151,7 @@ public final class AggRewriter {
             String header = item.h == null ? null : item.h.getText();
             if (keyOf.containsKey(item)) {
                 int k = keyOf.get(item) + 1;
-                sb.append(rollup ? "r.k" : "t.k").append(k);
+                sb.append(direct ? copy(e) : (rollup ? "r.k" : "t.k") + k);
                 if (header == null) {
                     header =
                             e.field() != null && e.getChildCount() == 1
@@ -1044,9 +1244,11 @@ public final class AggRewriter {
                         .append(
                                 anchor(
                                         call,
-                                        rollup
-                                                ? "r." + useOf(call).column()
-                                                : "max(t." + useOf(call).column() + ")"));
+                                        direct
+                                                ? useOf(call).direct
+                                                : rollup
+                                                        ? "r." + useOf(call).column()
+                                                        : "max(t." + useOf(call).column() + ")"));
                 at = to;
             }
             return sb.append(verbatim(base + at, src.substring(at))).toString();

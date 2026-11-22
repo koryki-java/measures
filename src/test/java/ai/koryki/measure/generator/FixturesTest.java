@@ -1,5 +1,6 @@
 package ai.koryki.measure.generator;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -8,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.koryki.catalog.domain.Model;
 import ai.koryki.catalog.schema.Schema;
 import ai.koryki.databases.FileAsserter;
+import ai.koryki.databases.cases.CSVAssert;
 import ai.koryki.databases.cases.Fixtures;
 import ai.koryki.databases.cases.ListWithSqlResult;
 import ai.koryki.databases.cases.TestUtil;
@@ -100,6 +102,8 @@ public abstract class FixturesTest {
             r.map().check();
         }
 
+        sameRowsAsLayers(name, kql, r.kql());
+
         Path rewritten = kindDir("rewrite", name, ".kql");
         golden(r.kql(), rewritten);
         golden(
@@ -130,6 +134,41 @@ public abstract class FixturesTest {
                 Fixtures.expectedViolations("duckdb", SCHEMA),
                 "duckdb",
                 true);
+    }
+
+    /**
+     * The plain form of a query that cannot fan out must give the rows of the general form, the
+     * layers: every query of the corpus is run both ways on the database.
+     */
+    /**
+     * One query, both ways. {@code plain}: whether it must be written without the layers (it cannot
+     * fan out) or must keep them (it can).
+     */
+    protected final void assertPlainOrLayered(String kql, boolean plain) {
+        Rewritten r = rewriter().rewrite(kql);
+        assertTrue(r.ok(), () -> kql + " was refused: " + r.violations());
+        assertEquals(plain, !r.kql().contains("aggd"), kql + "\n" + r.kql());
+        sameRowsAsLayers("inline", kql, r.kql());
+    }
+
+    private void sameRowsAsLayers(String name, String kql, String shortcut) {
+        Rewritten general = rewriter().layered().rewrite(kql);
+        assertTrue(general.ok(), name);
+        if (general.kql().equals(shortcut)) {
+            return; // no shortcut was taken
+        }
+        String a = rows(shortcut, name);
+        String b = rows(general.kql(), name);
+        assertEquals(b, a, name + ": the plain form and the layers differ");
+    }
+
+    private String rows(String kql, String name) {
+        String csv = new CSVAssert<>(engine(), kql, name).getCsv();
+        String[] lines = csv.split("\\R");
+        // the header as it is, the rows in any order: a group by has no order of its own
+        return lines[0]
+                + "\n"
+                + Stream.of(lines).skip(1).sorted().collect(Collectors.joining("\n"));
     }
 
     private static Path kindDir(String kind, String name, String suffix) {

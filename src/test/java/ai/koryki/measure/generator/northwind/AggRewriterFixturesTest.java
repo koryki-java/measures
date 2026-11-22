@@ -48,6 +48,42 @@ class AggRewriterFixturesTest extends FixturesTest {
                         .build();
     }
 
+    /**
+     * A query whose links all lead to one row of the other table needs no layers: the plain query
+     * gives the same rows. One that can multiply the rows of the measure's table keeps them.
+     */
+    @Test
+    void aQueryThatCannotFanOutIsWrittenWithoutLayers() {
+        // orders -> customers is many to one, in either way of writing it
+        for (String q :
+                List.of(
+                        "FIND customers c, c VIA same_customer orders o FETCH c.country, agg(o.total_freight) freight",
+                        "FIND orders o, o VIA same_customer customers c FETCH c.country, agg(o.total_freight) freight, agg(o.order_count) n",
+                        "FIND customers c, c VIA same_customer orders o FETCH agg(o.total_freight) freight",
+                        "FIND customers c, c VIA same_customer orders o FILTER c.country = 'Germany' FETCH c.city, agg(o.total_freight) freight",
+                        "FIND customers c, c VIA same_customer orders o FILTER agg(o.total_freight) > 5000 FETCH c.country, agg(o.total_freight) freight",
+                        "FIND customers c, c VIA same_customer orders o FETCH c.country, round(agg(o.total_freight) / agg(o.order_count), 2) per_order DESC LIMIT 5",
+                        "FIND customers c, c VIA same_customer orders o FETCH c.country, upper(c.city) city, agg(o.total_freight) * 2 twice")) {
+            assertPlainOrLayered(q, true);
+        }
+    }
+
+    @Test
+    void aQueryThatCanFanOutKeepsTheLayers() {
+        for (String q :
+                List.of(
+                        // two tables with measures
+                        "FIND customers c, c VIA same_customer orders o, o VIA same_order order_details od FETCH c.country, agg(o.total_freight) freight, agg(od.units) units",
+                        // order_details -> orders is many to one, but orders is the home here
+                        "FIND orders o, o VIA same_order order_details od FETCH o.ship_country, agg(o.total_freight) freight",
+                        // orders -> order_details is one to many
+                        "FIND orders o, o VIA same_order order_details od FETCH od.product_id, agg(o.total_freight) freight",
+                        // an outer link
+                        "FIND customers c, c + orders o VIA same_customer FETCH c.country, agg(o.total_freight) freight")) {
+            assertPlainOrLayered(q, false);
+        }
+    }
+
     @Override
     protected AggRewriter rewriter() {
         return rewriter;
