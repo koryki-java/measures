@@ -149,4 +149,19 @@ class AggRewriterFixturesTest extends FixturesTest {
         Range r = refusedAt(HEAD + "FETCH c.country, agg(o.total_freight");
         assertEquals(2, r.getStart().getLine());
     }
+
+    @Test
+    void aTailThatWasNotRewrittenMapsToItself() {
+        String tail = "VISUALIZE country AS x\nDRAW bar";
+        String all = QUERY + "\n" + tail;
+        Rewritten r = rewriter.rewrite(QUERY);
+        var map = r.map().withTail(all, QUERY.length() + 1, "\n");
+        String kql = r.kql() + "\n" + tail;
+        assertEquals(kql, map.rewritten());
+        int from = kql.indexOf("DRAW bar");
+        assertEquals(new Range(5, 1, 5, 9), map.toOriginal(from, from + "DRAW bar".length()));
+        // what was in front of it is unchanged
+        int call = kql.indexOf("max(t.v1)");
+        assertEquals(at(3, "agg(o.total_freight)"), map.toOriginal(call, call + 9));
+    }
 }

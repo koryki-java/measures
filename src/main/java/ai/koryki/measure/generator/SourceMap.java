@@ -102,6 +102,27 @@ public final class SourceMap {
         }
     }
 
+    /**
+     * The map of the rewritten query with the unchanged rest of the input put behind it. For a
+     * caller that rewrote only the first part of a query (the part before a {@code VISUALIZE}
+     * clause, say) and appends the clause as it was: {@code original} is the whole input, whose
+     * first part is what was rewritten, {@code from} the offset where the rest starts, and {@code
+     * separator} what was put between the two. The separator maps to the start of the rest.
+     */
+    public SourceMap withTail(String original, int from, String separator) {
+        List<Span> out = new ArrayList<>(spans);
+        int at = rewritten.length();
+        if (!separator.isEmpty()) {
+            out.add(new Span(at, at + separator.length(), from, from, false));
+            at += separator.length();
+        }
+        String tail = original.substring(from);
+        if (!tail.isEmpty()) {
+            out.add(new Span(at, at + tail.length(), from, from, true));
+        }
+        return new SourceMap(original, rewritten + separator + tail, out);
+    }
+
     /** The rewritten query this map belongs to. */
     public String rewritten() {
         return rewritten;
