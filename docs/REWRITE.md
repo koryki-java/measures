@@ -98,6 +98,17 @@ with two plain truth queries (all 21 countries, tolerance 1e-3). Run once, 2026-
 | SQL Server | **not run**: the host is unreachable from here, the test skipped |
 | Snowflake | **not run**: cloud account, excluded |
 
+`AggRewriter` output (7 queries: two tables with a fan-out join, shared layer with count and avg, a filter on another
+table, HAVING with sort and limit, `agg(a) / agg(b)`, a measure with its own `case`, no group key) was run on each
+dialect through the core Northwind engine and compared with the DuckDB result, rounded to two decimals, run once
+2026-11-22:
+
+| Dialect | AggRewriter output |
+|---|---|
+| PostgreSQL 17, MariaDB 11.8, Oracle Free, Trino, SQLite | **equal** on all 7 queries |
+| SQL Server | **not run**: host unreachable, test skipped |
+| Snowflake | **not run**: cloud account, excluded |
+
 Typed NULL padding with `to_integer(NULL)` and `to_decimal(NULL, 18, 4)` renders and runs on all six.
 The spike test was a copy of each module's Northwind engine test; it is not kept.
 
@@ -136,5 +147,5 @@ a plain aggregate next to `agg`, a `FETCH` item that mixes `agg` with a column, 
 measure that is no attribute of the entity, a measure with a result type the padding is not written for (needs a
 concept: INTEGER, DECIMAL, FLOAT, TEXT, DATE, TIMESTAMP, BOOLEAN; a `count` needs none).
 
-Not checked yet: the typed NULLs other than integer and decimal, any dialect but DuckDB, and the entity-to-table name
+Not checked yet: the typed NULLs other than integer and decimal, SQL Server and Snowflake, and the entity-to-table name
 mapping beyond `Entity.table`.
