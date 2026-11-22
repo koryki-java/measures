@@ -33,6 +33,9 @@ dependencies {
     // The TPC-DS catalog (with its measures.json) and database, for the tpcds corpus. Same resolution.
     testImplementation libs.koryki.tpcds.catalog
     testImplementation libs.koryki.tpcds.duckdb
+    // The SCOTT catalog and database, for the scott corpus (the data of Apache Ossie's query compliance cases).
+    testImplementation libs.koryki.scott.catalog
+    testImplementation libs.koryki.scott.duckdb
     testImplementation platform(libs.junit.bom)
     testImplementation libs.junit.jupiter
     testRuntimeOnly libs.junit.platform.launcher
@@ -90,7 +93,7 @@ def withCorpus = { Test task, String root ->
 }
 
 test {
-    exclude '**/tpcds/**'
+    exclude '**/tpcds/**', '**/scott/**'
     withCorpus(it, fixtureRoot('test.root', '../northwind'))
 }
 
@@ -103,7 +106,21 @@ tasks.register('tpcdsTest', Test) {
     withCorpus(it, fixtureRoot('tpcds.root', '../tpcds'))
 }
 
-tasks.named('check') { dependsOn 'tpcdsTest' }
+tasks.register('scottTest', Test) {
+    description = 'The rewriter against the SCOTT measures corpus (koryki-java/scott), and the results of the Apache Ossie cases.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/scott/**'
+    withCorpus(it, fixtureRoot('scott.root', '../scott'))
+    // A checkout of apache/ossie, for the expected.sql of its query cases (-Dossie.root, or 'ossie.root').
+    def ossie = System.getProperty('ossie.root') ?: providers.gradleProperty('ossie.root').orNull
+    if (ossie != null) {
+        systemProperty 'ossie.root', ossie
+    }
+}
+
+tasks.named('check') { dependsOn 'tpcdsTest', 'scottTest' }
 
 publishing {
     publications {

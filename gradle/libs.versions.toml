@@ -12,6 +12,8 @@ koryki-core = "0.4.2"
 koryki-northwind-catalog-version = "0.4.2-SNAPSHOT"
 # The tpcds repository: the catalog (with its measures.json) and the DuckDB database.
 koryki-tpcds-version = "0.1.3-SNAPSHOT"
+# The scott repository: the catalog (with its measures.json) and the DuckDB database.
+koryki-scott-version = "0.1.0-SNAPSHOT"
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
@@ -27,6 +29,8 @@ koryki-testkit = { module = "ai.koryki.core:koryki-testkit", version.ref = "kory
 koryki-northwind-catalog = { module = "ai.koryki.northwind:koryki-northwind-catalog", version.ref = "koryki-northwind-catalog-version" }
 koryki-tpcds-catalog = { module = "ai.koryki.tpcds:koryki-tpcds-catalog", version.ref = "koryki-tpcds-version" }
 koryki-tpcds-duckdb = { module = "ai.koryki.tpcds:koryki-tpcds-duckdb", version.ref = "koryki-tpcds-version" }
+koryki-scott-catalog = { module = "ai.koryki.scott:koryki-scott-catalog", version.ref = "koryki-scott-version" }
+koryki-scott-duckdb = { module = "ai.koryki.scott:koryki-scott-duckdb", version.ref = "koryki-scott-version" }
 koryki-duckdb = { module = "ai.koryki.core:koryki-duckdb", version.ref = "koryki-core" }
 
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
