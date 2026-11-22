@@ -26,6 +26,10 @@ dependencies {
 
     testImplementation libs.koryki.northwind
     testImplementation libs.koryki.duckdb
+    testImplementation libs.koryki.testkit
+    // measures.json, the measures of the Northwind catalog. mavenLocal comes first (settings.gradle), so
+    // a snapshot built in koryki-java/northwind is found; a release comes from Central.
+    testImplementation libs.koryki.northwind.catalog
     testImplementation platform(libs.junit.bom)
     testImplementation libs.junit.jupiter
     testRuntimeOnly libs.junit.platform.launcher
@@ -58,6 +62,26 @@ tasks.named('jar') {
 
 test {
     useJUnitPlatform()
+
+    // The fixture corpus is read from a checkout of koryki-java/northwind, as in koryki-java/core:
+    //   ./gradlew test -Dtest.root=/path/to/northwind     (or 'test.root' in gradle.properties)
+    // and, failing both, the sibling checkout ../northwind. A golden is written only on request:
+    //   ./gradlew test -Dfixtures.write=true
+    systemProperty 'fixtures.write', System.getProperty('fixtures.write', 'false')
+    def testRoot = System.getProperty('test.root')
+            ?: providers.gradleProperty('test.root').orNull
+            ?: (file('../northwind').isDirectory() ? file('../northwind').absolutePath : null)
+    def corpus = 'fixture/src/main/resources/ai/koryki/fixture'
+    if (testRoot != null) {
+        systemProperty 'test.root', testRoot
+        systemProperty 'test.corpus', corpus
+        // Without this a changed fixture would leave the test UP-TO-DATE.
+        inputs.dir(file(testRoot).toPath().resolve(corpus).toFile())
+                .withPropertyName('corpus')
+                .withPathSensitivity(PathSensitivity.RELATIVE)
+                .optional()
+    }
+    testLogging { exceptionFormat 'full' }
 }
 
 publishing {

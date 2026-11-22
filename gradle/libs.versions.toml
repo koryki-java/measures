@@ -8,6 +8,8 @@ google-java-format = "1.36.1"
 
 # One version per koryki repository this project builds against.
 koryki-core = "0.4.2"
+# The northwind repository: the catalog (with its measures.json) and the shared fixture corpus.
+koryki-northwind-catalog-version = "0.4.2-SNAPSHOT"
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
@@ -19,6 +21,8 @@ jackson-databind = { module = "tools.jackson.core:jackson-databind", version.ref
 koryki-core = { module = "ai.koryki.core:koryki-core", version.ref = "koryki-core" }
 # Tests only: the Northwind catalog and its DuckDB database, and the DuckDB dialect.
 koryki-northwind = { module = "ai.koryki.core:koryki-northwind", version.ref = "koryki-core" }
+koryki-testkit = { module = "ai.koryki.core:koryki-testkit", version.ref = "koryki-core" }
+koryki-northwind-catalog = { module = "ai.koryki.northwind:koryki-northwind-catalog", version.ref = "koryki-northwind-catalog-version" }
 koryki-duckdb = { module = "ai.koryki.core:koryki-duckdb", version.ref = "koryki-core" }
 
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }

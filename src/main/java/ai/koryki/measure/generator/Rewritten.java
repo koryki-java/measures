@@ -16,7 +16,8 @@ import java.util.Map;
 public record Rewritten(String kql, Map<String, String> measures, List<String> violations) {
 
     public Rewritten {
-        measures = Map.copyOf(measures);
+        // in the order of the query's columns: copyOf would shuffle them
+        measures = java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(measures));
         violations = List.copyOf(violations);
     }
 
