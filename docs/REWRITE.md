@@ -109,7 +109,7 @@ dialect through the core Northwind engine and compared with the DuckDB result, r
 | SQL Server | **not run**: host unreachable, test skipped |
 | Snowflake | **not run**: cloud account, excluded |
 
-Typed NULL padding with `to_integer(NULL)` and `to_decimal(NULL, 18, 4)` renders and runs on all six.
+Typed NULL padding with `to_integer(NULL)` and `to_decimal(NULL, 18, 4)` renders and runs on all six (text: see ROLLUP).
 The spike test was a copy of each module's Northwind engine test; it is not kept.
 
 ## What does not work, and must never be emitted
@@ -150,9 +150,22 @@ SCOTT cases b10, b11, b15, b17 against Ossie's rows) and on PostgreSQL, MariaDB,
 Server for `outer_link`. A RIGHT join is a LEFT join with the sides swapped; a filter in the ON clause is not
 expressible in KQL.
 
+## ROLLUP
+
+`ROLLUP` is evaluated once per grouping set: all the keys, one fewer from the right, ... none. Each layer has one
+aggregate block per set (`aggm1s2`, `aggm1s1`, `aggm1s0`), padded to the full key list with typed NULLs and a
+constant `g` that numbers the set, joined by `UNIONALL`. A block `aggr` merges with `max` per `(g, keys)` and the
+outer query drops `g`. Two things follow: a total row is the measure over all rows (the average of all employees,
+not the average of the department averages, Ossie a09), and a group whose key really is NULL stays apart from its
+subtotal. The output has no `ROLLUP`, so it also runs on SQLite, which has none, and on MariaDB with sorting.
+The keys must be plain columns (their type pads the totals); an expression key is refused. Checked: Ossie a09 on
+DuckDB, the Northwind `rollup` (two layers, region NULL for some countries) against independent `GROUP BY ROLLUP`
+queries on DuckDB (all 56 rows), and its SQL on PostgreSQL, MariaDB, Oracle, Trino, SQLite and SQL Server.
+`to_text(NULL)` is ambiguous for core's validator; the text padding is `to_text(to_integer(NULL))`.
+
 ## What the first version refuses
 
-A query with its own `WITH`, a set operation or a bracketed query, `FETCH DISTINCT`, `ROLLUP`,
+A query with its own `WITH`, a set operation or a bracketed query, `FETCH DISTINCT`, a `ROLLUP` over an expression key,
 a plain aggregate next to `agg`, a `FETCH` item that mixes `agg` with a column, `agg` in a sub-query or with `OVER`,
 `agg` without a `FETCH`, an unknown alias or measure, a table without a primary key, a column of the key or of a
 measure that is no attribute of the entity, a measure with a result type the padding is not written for (needs a

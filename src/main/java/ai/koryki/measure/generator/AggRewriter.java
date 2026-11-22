@@ -167,6 +167,9 @@ public final class AggRewriter {
         private final Map<String, String> provenance = new LinkedHashMap<>();
         // An optional link (+) in the source graph: a layer then holds NULL-padded rows.
         private boolean outer;
+        // FETCH ROLLUP: one evaluation per grouping set, the keys dropped from the right.
+        private boolean rollup;
+        private final List<KQLParser.FieldContext> keyFields = new ArrayList<>();
 
         Run(String kql) {
             this.kql = kql;
@@ -187,9 +190,10 @@ public final class AggRewriter {
             if (fetch == null) {
                 throw new Refusal("agg() needs a FETCH clause");
             }
-            if (fetch.DISTINCT() != null || fetch.ROLLUP() != null) {
-                throw new Refusal("FETCH DISTINCT and ROLLUP are not supported with agg() yet");
+            if (fetch.DISTINCT() != null) {
+                throw new Refusal("FETCH DISTINCT is not supported with agg() yet");
             }
+            rollup = fetch.ROLLUP() != null;
 
             // The filter: row predicates go into the layers, predicates on measures become HAVING.
             List<String> rows = new ArrayList<>();
@@ -229,6 +233,7 @@ public final class AggRewriter {
                     }
                     keyOf.put(item, keys.size());
                     keys.add(text(e));
+                    keyFields.add(e.field() != null && e.getChildCount() == 1 ? e.field() : null);
                 }
             }
             for (var h : having) {
@@ -244,6 +249,9 @@ public final class AggRewriter {
                 throw new Refusal("agg() needs a FETCH clause");
             }
 
+            if (rollup && keys.isEmpty()) {
+                throw new Refusal("ROLLUP needs at least one group key");
+            }
             prepare();
             return new Rewritten(build(items, keyOf, keys, rows, having), provenance, List.of());
         }
@@ -520,22 +528,60 @@ public final class AggRewriter {
                                 + u.measure.getName()
                                 + "' has no concept: its result type is needed to pad the union");
             }
+            return typedNull(family, "measure '" + u.measure.getName() + "'");
+        }
+
+        /** A NULL of the type of a column family, for padding a union. */
+        private String typedNull(String family, String what) {
             return switch (family) {
                 case "INTEGER" -> "to_integer(NULL)";
                 case "DECIMAL" -> "to_decimal(NULL, 18, 4)";
                 case "FLOAT" -> "to_float(NULL)";
-                case "TEXT" -> "to_text(NULL)";
+                case "TEXT" -> "to_text(to_integer(NULL))";
                 case "DATE" -> "to_date(NULL)";
                 case "TIMESTAMP" -> "to_timestamp(NULL)";
                 case "BOOLEAN" -> "to_boolean(NULL)";
                 default ->
                         throw new Refusal(
-                                "measure '"
-                                        + u.measure.getName()
-                                        + "' has the type family "
+                                what
+                                        + " has the type family "
                                         + family
                                         + ", which the union cannot be padded for yet");
             };
+        }
+
+        /** The NULL that stands in for group key {@code i} on the rows of a rolled-up total. */
+        private String keyNull(int i) {
+            KQLParser.FieldContext f = keyFields.get(i);
+            if (f == null) {
+                throw new Refusal("ROLLUP needs plain columns as group keys, not expressions");
+            }
+            String entityName = entityOfAlias.get(f.alias.getText());
+            Entity entity =
+                    model.getEntity(entityName)
+                            .orElseThrow(() -> new Refusal("unknown entity '" + entityName + "'"));
+            String tableName = entity.getTable() != null ? entity.getTable() : entity.getName();
+            Attribute a =
+                    entity.getAttributes().stream()
+                            .filter(x -> f.name.getText().equals(x.getName()))
+                            .findFirst()
+                            .orElseThrow(
+                                    () ->
+                                            new Refusal(
+                                                    "unknown attribute '"
+                                                            + text(f)
+                                                            + "' as a key"));
+            String column = a.getColumn() != null ? a.getColumn() : a.getName();
+            Column c =
+                    table(tableName).getColumns().stream()
+                            .filter(x -> column.equals(x.getName()))
+                            .findFirst()
+                            .orElseThrow(() -> new Refusal("unknown column of key " + text(f)));
+            String family = c.getConcept() == null ? null : c.getConcept().getTypeFamily();
+            if (family == null) {
+                throw new Refusal("group key " + text(f) + " has no type family for ROLLUP");
+            }
+            return typedNull(family, "group key " + text(f));
         }
 
         // ----- the output -----
@@ -567,44 +613,77 @@ public final class AggRewriter {
                 d.append(String.join(", ", cols)).append(")");
                 blocks.add(d.toString());
 
-                List<String> m = new ArrayList<>();
-                for (int i = 0; i < keys.size(); i++) {
-                    m.add("x.k" + (i + 1) + " k" + (i + 1));
+                // One aggregate block per grouping set: all the keys, then one fewer, ... none
+                // (ROLLUP); without ROLLUP just the one set of all keys.
+                for (int j = keys.size(); j >= (rollup ? 0 : keys.size()); j--) {
+                    List<String> m = new ArrayList<>();
+                    for (int i = 0; i < j; i++) {
+                        m.add("x.k" + (i + 1) + " k" + (i + 1));
+                    }
+                    for (Use u : l.uses) {
+                        m.add(u.expression + " " + u.column());
+                    }
+                    blocks.add(
+                            "aggm"
+                                    + l.n
+                                    + (rollup ? "s" + j : "")
+                                    + " AS (FIND aggd"
+                                    + l.n
+                                    + " x FETCH "
+                                    + String.join(", ", m)
+                                    + ")");
                 }
-                for (Use u : l.uses) {
-                    m.add(u.expression + " " + u.column());
-                }
-                blocks.add(
-                        "aggm"
-                                + l.n
-                                + " AS (FIND aggd"
-                                + l.n
-                                + " x FETCH "
-                                + String.join(", ", m)
-                                + ")");
             }
 
             String source;
-            if (ls.size() == 1) {
+            if (ls.size() == 1 && !rollup) {
                 source = "aggm1";
             } else {
                 List<String> branches = new ArrayList<>();
-                for (Layer l : ls) {
-                    List<String> cols = new ArrayList<>();
-                    for (int i = 0; i < keys.size(); i++) {
-                        cols.add("a.k" + (i + 1) + " k" + (i + 1));
+                for (int j = keys.size(); j >= (rollup ? 0 : keys.size()); j--) {
+                    for (Layer l : ls) {
+                        List<String> cols = new ArrayList<>();
+                        if (rollup) {
+                            // which grouping set: keeps a total apart from a group whose key is
+                            // NULL
+                            cols.add(j + " g");
+                        }
+                        for (int i = 0; i < keys.size(); i++) {
+                            cols.add((i < j ? "a.k" + (i + 1) : keyNull(i)) + " k" + (i + 1));
+                        }
+                        for (Use u : uses.values()) {
+                            cols.add(
+                                    (u.layer == l ? "a." + u.column() : u.nullOf)
+                                            + " "
+                                            + u.column());
+                        }
+                        branches.add(
+                                "FIND aggm"
+                                        + l.n
+                                        + (rollup ? "s" + j : "")
+                                        + " a FETCH "
+                                        + String.join(", ", cols));
                     }
-                    for (Use u : uses.values()) {
-                        cols.add((u.layer == l ? "a." + u.column() : u.nullOf) + " " + u.column());
-                    }
-                    branches.add("FIND aggm" + l.n + " a FETCH " + String.join(", ", cols));
                 }
                 blocks.add("aggu AS (" + String.join("\n UNIONALL\n ", branches) + ")");
                 source = "aggu";
             }
+            if (rollup) {
+                // One row per grouping set and key; the set number is dropped in the query below.
+                List<String> cols = new ArrayList<>();
+                cols.add("t.g g");
+                for (int i = 0; i < keys.size(); i++) {
+                    cols.add("t.k" + (i + 1) + " k" + (i + 1));
+                }
+                for (Use u : uses.values()) {
+                    cols.add("max(t." + u.column() + ") " + u.column());
+                }
+                blocks.add("aggr AS (FIND aggu t FETCH " + String.join(", ", cols) + ")");
+                source = "aggr";
+            }
             sb.append(String.join(",\n", blocks)).append("\n");
 
-            sb.append("FIND ").append(source).append(" t");
+            sb.append("FIND ").append(source).append(rollup ? " r" : " t");
             if (!having.isEmpty()) {
                 List<String> h = new ArrayList<>();
                 for (var part : having) {
@@ -641,7 +720,7 @@ public final class AggRewriter {
             String header = item.h == null ? null : item.h.getText();
             if (keyOf.containsKey(item)) {
                 int k = keyOf.get(item) + 1;
-                sb.append("t.k").append(k);
+                sb.append(rollup ? "r.k" : "t.k").append(k);
                 if (header == null) {
                     header =
                             e.field() != null && e.getChildCount() == 1
@@ -705,7 +784,11 @@ public final class AggRewriter {
             for (var call : calls) {
                 int from = call.start.getStartIndex() - base;
                 int to = call.stop.getStopIndex() - base + 1;
-                sb.append(src, at, from).append("max(t.").append(useOf(call).column()).append(")");
+                sb.append(src, at, from)
+                        .append(
+                                rollup
+                                        ? "r." + useOf(call).column()
+                                        : "max(t." + useOf(call).column() + ")");
                 at = to;
             }
             return sb.append(src.substring(at)).toString();

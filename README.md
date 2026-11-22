@@ -82,7 +82,7 @@ r.violations(); // why a query was refused (then kql() is null)
 ```
 
 Supported: one `FIND` with inner and optional (`+`) links, group keys, `agg` in `FETCH` (also inside scalar
-expressions) and in `AND` conjuncts of `FILTER` (they become `HAVING`), sort and limit. Everything
+expressions) and in `AND` conjuncts of `FILTER` (they become `HAVING`), sort and limit, and `ROLLUP` over plain columns. Everything
 else is refused with a reason, never guessed at; see [REWRITE.md](docs/REWRITE.md).
 
 ## Tests
