@@ -50,7 +50,7 @@ tasks.withType(Jar).configureEach {
 
 tasks.named('jar') {
     manifest {
-        attributes('Automatic-Module-Name': 'ai.koryki.measures')
+        attributes('Automatic-Module-Name': 'ai.koryki.measure')
     }
 }
 

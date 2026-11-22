@@ -8,6 +8,13 @@ unevaluated aggregate; a query that reads it asks for its value in the context o
 rows it aggregates are the rows of its table, each counted once, however the query joins or filters.
 How a measure is evaluated is not part of this project's model class; see the [plan](docs/PLAN.md).
 
+## Two parts
+
+| Package | Part |
+|---|---|
+| `ai.koryki.measure.catalog` | The measure definitions: `Measure`, the sidecar file, loading and checking against a catalog |
+| `ai.koryki.measure.generator` | The rewriter: KQL with `agg(...)` in, plain KQL out (not yet written; see [the spike](docs/REWRITE.md)) |
+
 ## Why beside the catalog, not in it
 
 The measures are kept in a file of their own, next to the catalog, and are checked against it when they

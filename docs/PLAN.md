@@ -19,7 +19,7 @@ catalog, evaluate them with `agg()` in KQL, and recognise measures in result col
 |---|---|
 | Licence of `ossie-converter` | Apache-2.0, upstreamable. Depends on public `koryki-core` only, never on `derivation`. |
 | Measure definition | A data-only `Measure` in the project **`koryki-java/measures`** (Apache-2.0, on top of `koryki-core`), kept in a **sidecar file** beside `db.json`. Not in core, and not as an extension of core's classes. See "Where measures are kept". |
-| AGG rewrite | A **dialect-independent preprocessor** in front of SQL generation. **Contract: KQL in, KQL out** (`WITH` blocks), returned with provenance: `Rewritten { kql, output alias -> measure, violations }`. IQL stays a possible second backend, not the contract. Open: its own project `ossie-generator`, or a package of `measures` (definition and evaluation change together; proposed: `measures`). |
+| AGG rewrite | A **dialect-independent preprocessor** in front of SQL generation. **Contract: KQL in, KQL out** (`WITH` blocks), returned with provenance: `Rewritten { kql, output alias -> measure, violations }`. IQL stays a possible second backend, not the contract. Decided: a package of this project, `ai.koryki.measure.generator` (definition and evaluation change together), next to `ai.koryki.measure.catalog`. |
 | Core changes | **None needed so far.** The rewriter uses only the public `KQLReader`, `LinkResolver` and `Schema`. A reserved `agg` function in core that rejects un-rewritten input with a clear message is optional. |
 | Untrusted expression | `Measure.expression` is catalog text. Before the rewriter puts it into KQL it parses it as an expression of its own and checks that the whole text was consumed, so that it cannot add clauses (see core `docs/INJECTION.md`). |
 
