@@ -133,15 +133,26 @@ The spike test was a copy of each module's Northwind engine test; it is not kept
 3. **Identity must be reachable.** KQL names only columns the model exposes as attributes. A measure whose table has
    a primary key column that is not an attribute cannot get a distinct layer. Refuse it, with that reason.
 4. **Not tried:** filters, HAVING, ordering and limit on dialects other than DuckDB; group
-   keys that are expressions (`month(o.order_date)`); outer links (`+`) in the original query; raw aggregates mixed
+   keys that are expressions (`month(o.order_date)`); raw aggregates mixed
    with `agg()` in one query (refuse); user queries that have `WITH` blocks of their own; large data (each layer repeats
    the whole join tree and does a `DISTINCT`).
 5. **Where the input is parsed.** Done: `KQLReader` parses the query and the rewriter splices the *text* of the
    source graph, the row filters and the group keys, so what the user wrote is what is copied.
 
+## Outer links
+
+An optional link (`+`) is copied into every layer with the rest of the graph. A layer then holds a NULL-padded
+row (its identity is NULL) for each row that found no partner. It adds nothing to a measure: `sum`, `avg` and
+`count(x)` skip NULLs, and `count()` is written `count(x.i1)`, the count of the identity. A group whose rows are
+all padded stays, with 0 for a count and NULL for the other measures (Ossie b17). Only when the query has a `+`
+is `count()` rewritten, so the plain output does not change. Verified on DuckDB (the Northwind `outer_link` and the
+SCOTT cases b10, b11, b15, b17 against Ossie's rows) and on PostgreSQL, MariaDB, Oracle, Trino, SQLite and SQL
+Server for `outer_link`. A RIGHT join is a LEFT join with the sides swapped; a filter in the ON clause is not
+expressible in KQL.
+
 ## What the first version refuses
 
-A query with its own `WITH`, a set operation or a bracketed query, an outer link (`+`), `FETCH DISTINCT`, `ROLLUP`,
+A query with its own `WITH`, a set operation or a bracketed query, `FETCH DISTINCT`, `ROLLUP`,
 a plain aggregate next to `agg`, a `FETCH` item that mixes `agg` with a column, `agg` in a sub-query or with `OVER`,
 `agg` without a `FETCH`, an unknown alias or measure, a table without a primary key, a column of the key or of a
 measure that is no attribute of the entity, a measure with a result type the padding is not written for (needs a

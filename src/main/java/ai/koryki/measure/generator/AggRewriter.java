@@ -42,10 +42,16 @@ import org.antlr.v4.runtime.tree.ParseTree;
  *   <li>the outer query: the keys, and {@code max} of every measure column.
  * </ol>
  *
- * <p>Supported now: one {@code SELECT} (no {@code WITH}, no set operation), inner links, group keys
- * as plain expressions, {@code agg} in {@code FETCH} (also inside scalar expressions) and in
- * top-level {@code AND} conjuncts of {@code FILTER} (those become {@code HAVING}), sort and limit.
- * Anything else is refused with a violation that says why; the query is never guessed at.
+ * <p>Supported now: one {@code SELECT} (no {@code WITH}, no set operation), inner and optional
+ * ({@code +}) links, group keys as plain expressions, {@code agg} in {@code FETCH} (also inside
+ * scalar expressions) and in top-level {@code AND} conjuncts of {@code FILTER} (those become {@code
+ * HAVING}), sort and limit. Anything else is refused with a violation that says why; the query is
+ * never guessed at.
+ *
+ * <p>With an optional link a layer holds NULL-padded rows (their identity is NULL). They add
+ * nothing to a measure: {@code sum}, {@code avg} and {@code count(x)} skip the NULLs, and {@code
+ * count()} is written as the count of the identity. A group whose rows are all padded stays, with
+ * the empty-input value of each measure (0 for a count, NULL for the others).
  *
  * <p>The measure expression comes from a file and is not trusted. It is parsed as an expression of
  * its own and only its bare column names are replaced; its text is never pasted into the query
@@ -159,6 +165,8 @@ public final class AggRewriter {
         private final Map<String, Layer> layers = new LinkedHashMap<>();
         private final Map<String, Use> uses = new LinkedHashMap<>();
         private final Map<String, String> provenance = new LinkedHashMap<>();
+        // An optional link (+) in the source graph: a layer then holds NULL-padded rows.
+        private boolean outer;
 
         Run(String kql) {
             this.kql = kql;
@@ -262,7 +270,7 @@ public final class AggRewriter {
             all.add(select.source());
             for (var link : select.link()) {
                 if (link.PLUS() != null) {
-                    throw new Refusal("an outer link (+) is not supported with agg() yet");
+                    outer = true;
                 }
                 all.add(link.source());
             }
@@ -452,20 +460,43 @@ public final class AggRewriter {
 
         /** The measure expression with its bare column names replaced by columns of the layer. */
         private String expression(Layer layer, KQLParser.ExpressionContext e) {
+            // The pieces of the text to replace: a bare column name becomes a column of the layer;
+            // with an optional link in the query, count() becomes the count of the identity, so
+            // that
+            // the NULL-padded row of the layer (its identity is NULL) is not counted.
+            record Piece(int from, int to, String with) {}
+            List<Piece> pieces = new ArrayList<>();
+            int base = e.start.getStartIndex();
             List<KQLParser.ParamContext> params = new ArrayList<>();
             collect(e, KQLParser.ParamContext.class, params);
-            params.sort(Comparator.comparingInt(p -> p.start.getStartIndex()));
+            for (var p : params) {
+                String col = layer.arg(attribute(layer, p.getText()).getName());
+                pieces.add(
+                        new Piece(
+                                p.start.getStartIndex() - base,
+                                p.stop.getStopIndex() - base + 1,
+                                "x." + col));
+            }
+            if (outer) {
+                List<KQLParser.FunctionContext> fns = new ArrayList<>();
+                collect(e, KQLParser.FunctionContext.class, fns);
+                for (var f : fns) {
+                    if ("count".equals(f.func.getText()) && f.argument().isEmpty()) {
+                        pieces.add(
+                                new Piece(
+                                        f.start.getStartIndex() - base,
+                                        f.stop.getStopIndex() - base + 1,
+                                        "count(x.i1)"));
+                    }
+                }
+            }
+            pieces.sort(Comparator.comparingInt(Piece::from));
             String src = text(e);
-            int base = e.start.getStartIndex();
             StringBuilder sb = new StringBuilder();
             int at = 0;
-            for (var p : params) {
-                int from = p.start.getStartIndex() - base;
-                int to = p.stop.getStopIndex() - base + 1;
-                String name = p.getText();
-                String col = layer.arg(attribute(layer, name).getName());
-                sb.append(src, at, from).append("x.").append(col);
-                at = to;
+            for (var p : pieces) {
+                sb.append(src, at, p.from()).append(p.with());
+                at = p.to();
             }
             return sb.append(src.substring(at)).toString();
         }
