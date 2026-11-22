@@ -7,13 +7,13 @@ spotless = "8.11.0"
 google-java-format = "1.36.1"
 
 # One version per koryki repository this project builds against.
-koryki-core = "0.4.3-SNAPSHOT"
+koryki-core = "0.5.0-SNAPSHOT"
 # The northwind repository: the catalog (with its measures.json) and the shared fixture corpus.
-koryki-northwind-catalog-version = "0.4.2-SNAPSHOT"
+koryki-northwind-catalog-version = "0.5.0-SNAPSHOT"
 # The tpcds repository: the catalog (with its measures.json) and the DuckDB database.
-koryki-tpcds-version = "0.1.3-SNAPSHOT"
+koryki-tpcds-version = "0.5.0"
 # The scott repository: the catalog (with its measures.json) and the DuckDB database.
-koryki-scott-version = "0.1.0-SNAPSHOT"
+koryki-scott-version = "0.5.0"
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
