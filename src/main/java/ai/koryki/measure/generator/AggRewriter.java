@@ -129,7 +129,8 @@ public final class AggRewriter {
                     r.derived(),
                     r.violations(),
                     r.map().withTail(kql, cut, "\n"),
-                    r.problems());
+                    r.problems(),
+                    r.shown());
         } catch (Refusal r) {
             if (!r.located()) {
                 r.from = 0;
@@ -271,6 +272,7 @@ public final class AggRewriter {
         private final Map<String, Use> uses = new LinkedHashMap<>();
         private final Map<String, String> provenance = new LinkedHashMap<>();
         private final Map<String, List<String>> derived = new LinkedHashMap<>();
+        private final Map<String, String> shown = new LinkedHashMap<>();
         // An optional link (+) in the source graph: a layer then holds NULL-padded rows.
         private boolean outer;
         // FETCH ROLLUP: one evaluation per grouping set, the keys dropped from the right.
@@ -388,7 +390,13 @@ public final class AggRewriter {
             focus = select;
             prepare();
             return new Rewritten(
-                    build(items, keyOf, keys, rows, having), provenance, derived, List.of());
+                    build(items, keyOf, keys, rows, having),
+                    provenance,
+                    derived,
+                    List.of(),
+                    null,
+                    List.of(),
+                    shown);
         }
 
         // ----- the input -----
@@ -865,6 +873,25 @@ public final class AggRewriter {
                                             last.stop.getStopIndex())));
         }
 
+        /** The expression as written, each agg call as {table.measure}. */
+        private String shownText(
+                KQLParser.ExpressionContext e, List<KQLParser.FunctionContext> calls) {
+            int from = e.start.getStartIndex();
+            StringBuilder sb =
+                    new StringBuilder(
+                            e.start
+                                    .getInputStream()
+                                    .getText(Interval.of(from, e.stop.getStopIndex())));
+            for (int i = calls.size() - 1; i >= 0; i--) {
+                var c = calls.get(i);
+                sb.replace(
+                        c.start.getStartIndex() - from,
+                        c.stop.getStopIndex() + 1 - from,
+                        "{" + tableOf(c) + "." + measureOf(c).getName() + "}");
+            }
+            return sb.toString();
+        }
+
         private String outerItem(
                 KQLParser.FetchItemContext item, Map<KQLParser.FetchItemContext, Integer> keyOf) {
             var e = item.expression();
@@ -900,6 +927,7 @@ public final class AggRewriter {
                                     .map(c -> tableOf(c) + "." + measureOf(c).getName())
                                     .distinct()
                                     .toList());
+                    shown.put(header, shownText(e, calls));
                 }
             }
             if (header != null) {
@@ -985,6 +1013,7 @@ public final class AggRewriter {
         private Mapped main;
         private final Map<String, String> provenance = new LinkedHashMap<>();
         private final Map<String, List<String>> derived = new LinkedHashMap<>();
+        private final Map<String, String> shown = new LinkedHashMap<>();
         private final String original;
 
         Driver(String original) {
@@ -1030,7 +1059,9 @@ public final class AggRewriter {
                             provenance,
                             derived,
                             List.of(),
-                            SourceMap.of(original, fullMapped));
+                            SourceMap.of(original, fullMapped),
+                            List.of(),
+                            shown);
                 }
                 KQLParser.SelectContext s = innermost(marked);
                 Run run =
@@ -1063,6 +1094,7 @@ public final class AggRewriter {
                     if (!hasSelectAbove(s)) {
                         r.measures().forEach(provenance::putIfAbsent);
                         r.derived().forEach(derived::putIfAbsent);
+                        r.shown().forEach(shown::putIfAbsent);
                     }
                 }
                 parts.addAll(part, run.blocks.stream().map(run::decode).toList());

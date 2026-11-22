@@ -15,6 +15,10 @@ import java.util.Map;
  *     round(agg(o.avg_freight), 2)}, a ratio of two), by name, with the measures read, as {@code
  *     table.measure} in the order of their first use. Not in {@link #measures()}: such a column is
  *     not the measure's value. A column without a header has no name to key it, so no entry
+ * @param shown for each column in {@link #derived()}, the expression as the user wrote it, with
+ *     every {@code agg(...)} call written as {@code {table.measure}}: {@code
+ *     round({orders.avg_freight}, 2)}. For whoever names the column after what it shows and not
+ *     after how it was computed
  * @param violations why the query was refused; empty when it was not
  * @param problems the same reasons as {@link #violations()}, each with its range in the input
  *     query; empty when the query was not refused
@@ -28,7 +32,8 @@ public record Rewritten(
         Map<String, List<String>> derived,
         List<String> violations,
         SourceMap map,
-        List<Problem> problems) {
+        List<Problem> problems,
+        Map<String, String> shown) {
 
     /**
      * One reason a query was refused, and where in the query the user wrote it.
@@ -37,6 +42,17 @@ public record Rewritten(
      * @param range the place, in the user's query (stop exclusive, as core's ranges are)
      */
     public record Problem(String message, ai.koryki.antlr.Range range) {}
+
+    /** A result without the expressions of its derived columns. */
+    public Rewritten(
+            String kql,
+            Map<String, String> measures,
+            Map<String, List<String>> derived,
+            List<String> violations,
+            SourceMap map,
+            List<Problem> problems) {
+        this(kql, measures, derived, violations, map, problems, Map.of());
+    }
 
     /** A result with a source map and no problems with a place. */
     public Rewritten(
@@ -68,6 +84,11 @@ public record Rewritten(
         derived = java.util.Collections.unmodifiableMap(copyOfLists(derived));
         violations = List.copyOf(violations);
         problems = problems == null ? List.of() : List.copyOf(problems);
+        shown =
+                shown == null
+                        ? Map.of()
+                        : java.util.Collections.unmodifiableMap(
+                                new java.util.LinkedHashMap<>(shown));
     }
 
     private static Map<String, List<String>> copyOfLists(Map<String, List<String>> in) {

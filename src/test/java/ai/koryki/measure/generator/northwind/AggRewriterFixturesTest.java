@@ -207,4 +207,17 @@ class AggRewriterFixturesTest extends FixturesTest {
         org.junit.jupiter.api.Assertions.assertTrue(formatted.contains("agg("), formatted);
         org.junit.jupiter.api.Assertions.assertFalse(formatted.contains("aggd1"), formatted);
     }
+
+    @Test
+    void aDerivedColumnKeepsTheExpressionAsWritten() {
+        Rewritten r =
+                rewriter.rewrite(
+                        HEAD
+                                + "FETCH c.country, round(agg(o.total_freight), 2) f,"
+                                + " agg(o.total_freight) / agg(o.order_count) per_order");
+        assertEquals("round({orders.total_freight}, 2)", r.shown().get("f"));
+        assertEquals("{orders.total_freight} / {orders.order_count}", r.shown().get("per_order"));
+        // a column that is exactly one measure is in measures(), not here
+        assertEquals(2, r.shown().size());
+    }
 }
