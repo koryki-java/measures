@@ -340,6 +340,9 @@ public final class AggRewriter {
         private boolean rollup;
         // the query needs no layers: see fanOutFree()
         private boolean direct;
+        // a group key that reads no column ('total'): grouped by in the plain form, which some
+        // databases refuse (PostgreSQL: non-integer constant in GROUP BY)
+        private boolean constantKey;
         private final List<KQLParser.FieldContext> keyFields = new ArrayList<>();
 
         // the names of its blocks, so that several selects of one query do not clash
@@ -429,6 +432,11 @@ public final class AggRewriter {
                                         + "'");
                     }
                     keyOf.put(item, keys.size());
+                    List<KQLParser.FieldContext> read = new ArrayList<>();
+                    collect(e, KQLParser.FieldContext.class, read);
+                    if (read.isEmpty()) {
+                        constantKey = true;
+                    }
                     keys.add(copy(e));
                     keyFields.add(e.field() != null && e.getChildCount() == 1 ? e.field() : null);
                 }
@@ -738,7 +746,7 @@ public final class AggRewriter {
          * different meaning.
          */
         private boolean fanOutFree() {
-            if (layers.size() != 1 || outer) {
+            if (layers.size() != 1 || outer || constantKey) {
                 return false;
             }
             String home = layers.values().iterator().next().alias;

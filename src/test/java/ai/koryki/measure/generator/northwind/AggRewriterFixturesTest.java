@@ -78,6 +78,9 @@ class AggRewriterFixturesTest extends FixturesTest {
                         "FIND orders o, o VIA same_order order_details od FETCH o.ship_country, agg(o.total_freight) freight",
                         // orders -> order_details is one to many
                         "FIND orders o, o VIA same_order order_details od FETCH od.product_id, agg(o.total_freight) freight",
+                        // a group key that reads no column is grouped by as it is, which
+                        // PostgreSQL and SQL Server refuse
+                        "FIND orders o FETCH 'total' metric, agg(o.total_freight) freight",
                         // an outer link
                         "FIND customers c, c + orders o VIA same_customer FETCH c.country, agg(o.total_freight) freight")) {
             assertPlainOrLayered(q, false);
