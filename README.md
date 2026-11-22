@@ -13,7 +13,7 @@ How a measure is evaluated is not part of this project's model class; see the [p
 | Package | Part |
 |---|---|
 | `ai.koryki.measure.catalog` | The measure definitions: `Measure`, the sidecar file, loading and checking against a catalog |
-| `ai.koryki.measure.generator` | The rewriter: KQL with `agg(...)` in, plain KQL out (not yet written; see [the spike](docs/REWRITE.md)) |
+| `ai.koryki.measure.generator` | `AggRewriter`: KQL with `agg(alias.measure)` in, plain KQL out, with the columns' provenance. The pattern and its limits are in [REWRITE.md](docs/REWRITE.md) |
 
 ## Why beside the catalog, not in it
 
@@ -68,6 +68,22 @@ Measure revenue = measures.find("orders", "revenue").orElseThrow();
 twice or equal to a column, two concepts, and a concept the schema cannot resolve. It does not parse the
 expression, and it does not ask for a primary key: the identity of the rows is for whoever evaluates the
 measure to ask for.
+
+### Rewrite
+
+```java
+AggRewriter rewriter = new AggRewriter(schema, model, measures);
+Rewritten r = rewriter.rewrite(
+    "FIND customers c, c VIA same_customer orders o, o VIA same_order order_details od "
+        + "FETCH c.country, agg(o.total_freight) freight, agg(od.units) units");
+r.kql();        // plain KQL: run it with any koryki engine, on any dialect
+r.measures();   // {freight=orders.total_freight, units=order_details.units}
+r.violations(); // why a query was refused (then kql() is null)
+```
+
+Supported: one `FIND` with inner links, group keys, `agg` in `FETCH` (also inside scalar
+expressions) and in `AND` conjuncts of `FILTER` (they become `HAVING`), sort and limit. Everything
+else is refused with a reason, never guessed at; see [REWRITE.md](docs/REWRITE.md).
 
 ## Build
 

@@ -17,6 +17,9 @@ spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
 jackson-databind = { module = "tools.jackson.core:jackson-databind", version.ref = "jackson" }
 
 koryki-core = { module = "ai.koryki.core:koryki-core", version.ref = "koryki-core" }
+# Tests only: the Northwind catalog and its DuckDB database, and the DuckDB dialect.
+koryki-northwind = { module = "ai.koryki.core:koryki-northwind", version.ref = "koryki-core" }
+koryki-duckdb = { module = "ai.koryki.core:koryki-duckdb", version.ref = "koryki-core" }
 
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" } # version comes from BOM

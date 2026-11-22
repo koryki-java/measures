@@ -24,6 +24,8 @@ dependencies {
     // The measure catalog is a JSON file.
     implementation libs.jackson.databind
 
+    testImplementation libs.koryki.northwind
+    testImplementation libs.koryki.duckdb
     testImplementation platform(libs.junit.bom)
     testImplementation libs.junit.jupiter
     testRuntimeOnly libs.junit.platform.launcher

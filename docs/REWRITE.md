@@ -1,4 +1,10 @@
-# The KQL the rewriter emits: spike results
+# The KQL the rewriter emits
+
+`ai.koryki.measure.generator.AggRewriter` implements the pattern below (first version, DuckDB tests in
+`AggRewriterTest`, each answer compared with a plain truth query). The rest of this page is the spike that
+it rests on, and the list of what it does not do yet.
+
+## Spike results
 
 Status: **spike, six of eight dialects.** Everything below was run against the Northwind DuckDB with koryki-core 0.4.2 and
 compared with a plain query that has no fan-out. The spike code was thrown away; the patterns are here.
@@ -119,5 +125,16 @@ The spike test was a copy of each module's Northwind engine test; it is not kept
    keys that are expressions (`month(o.order_date)`); outer links (`+`) in the original query; raw aggregates mixed
    with `agg()` in one query (refuse); user queries that have `WITH` blocks of their own; large data (each layer repeats
    the whole join tree and does a `DISTINCT`).
-5. **Where the input is parsed.** The generator reads the original KQL with `KQLReader`, so that the names of the
-   original (aliases, links, the join tree) can be copied into the layers. Not yet tried.
+5. **Where the input is parsed.** Done: `KQLReader` parses the query and the rewriter splices the *text* of the
+   source graph, the row filters and the group keys, so what the user wrote is what is copied.
+
+## What the first version refuses
+
+A query with its own `WITH`, a set operation or a bracketed query, an outer link (`+`), `FETCH DISTINCT`, `ROLLUP`,
+a plain aggregate next to `agg`, a `FETCH` item that mixes `agg` with a column, `agg` in a sub-query or with `OVER`,
+`agg` without a `FETCH`, an unknown alias or measure, a table without a primary key, a column of the key or of a
+measure that is no attribute of the entity, a measure with a result type the padding is not written for (needs a
+concept: INTEGER, DECIMAL, FLOAT, TEXT, DATE, TIMESTAMP, BOOLEAN; a `count` needs none).
+
+Not checked yet: the typed NULLs other than integer and decimal, any dialect but DuckDB, and the entity-to-table name
+mapping beyond `Entity.table`.
