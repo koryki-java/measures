@@ -134,7 +134,7 @@ The spike test was a copy of each module's Northwind engine test; it is not kept
    a primary key column that is not an attribute cannot get a distinct layer. Refuse it, with that reason.
 4. **Not tried:** filters, HAVING, ordering and limit on dialects other than DuckDB; group
    keys that are expressions (`month(o.order_date)`); raw aggregates mixed
-   with `agg()` in one query (refuse); user queries that have `WITH` blocks of their own; large data (each layer repeats
+   with `agg()` in one query (refuse); large data (each layer repeats
    the whole join tree and does a `DISTINCT`).
 5. **Where the input is parsed.** Done: `KQLReader` parses the query and the rewriter splices the *text* of the
    source graph, the row filters and the group keys, so what the user wrote is what is copied.
@@ -163,10 +163,24 @@ DuckDB, the Northwind `rollup` (two layers, region NULL for some countries) agai
 queries on DuckDB (all 56 rows), and its SQL on PostgreSQL, MariaDB, Oracle, Trino, SQLite and SQL Server.
 `to_text(NULL)` is ambiguous for core's validator; the text padding is `to_text(to_integer(NULL))`.
 
+## WITH blocks, sub-queries and set operations
+
+A query is rewritten select by select, innermost first: a scalar sub-query, a block of the user's own `WITH`, a branch
+of a set operation, then the main query. Each select that reads a measure directly gets its blocks (`q1aggd1`,
+`q1aggm1`, ..., the prefix `q<n>` when there is more than one) put in front of the block or main query that holds
+it, and is itself replaced by the query that reads them. Blocks of the user stay where they are; the blocks they
+read come first (the order matters, KQL sees a block only after it is defined). A block, a scalar sub-query and an
+`IN (FIND block ...)` can all be read from the main query. Two consequences: a block with `agg` and a sort and limit
+can be a filter ("the two departments with the largest payroll", Ossie b03), and an outer aggregate over `agg`
+values is a plain aggregate over a block (Ossie a12). Provenance lists the output columns of the main query only,
+and for a set operation the first branch that names a header. Checked: Ossie a11, b03, a12; the Northwind
+`with_block`, `subquery_scalar` (against plain SQL) and `union_branches`, on six dialects. A sub-query that reads an
+alias of the main query (correlated) is not supported.
+
 ## What the first version refuses
 
-A query with its own `WITH`, a set operation or a bracketed query, `FETCH DISTINCT`, a `ROLLUP` over an expression key,
-a plain aggregate next to `agg`, a `FETCH` item that mixes `agg` with a column, `agg` in a sub-query or with `OVER`,
+A bracketed query, `FETCH DISTINCT`, a `ROLLUP` over an expression key,
+a plain aggregate next to `agg`, a `FETCH` item that mixes `agg` with a column, `agg` with `OVER`, a correlated `agg` sub-query (it cannot be rewritten on its own),
 `agg` without a `FETCH`, an unknown alias or measure, a table without a primary key, a column of the key or of a
 measure that is no attribute of the entity, a measure with a result type the padding is not written for (needs a
 concept: INTEGER, DECIMAL, FLOAT, TEXT, DATE, TIMESTAMP, BOOLEAN; a `count` needs none).

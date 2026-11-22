@@ -42,7 +42,8 @@ import org.antlr.v4.runtime.tree.ParseTree;
  *   <li>the outer query: the keys, and {@code max} of every measure column.
  * </ol>
  *
- * <p>Supported now: one {@code SELECT} (no {@code WITH}, no set operation), inner and optional
+ * <p>Supported now: each {@code SELECT} that reads a measure (also in a {@code WITH} block, a
+ * scalar sub-query or a branch of a set operation, see {@code Driver}), with inner and optional
  * ({@code +}) links, group keys as plain expressions, {@code agg} in {@code FETCH} (also inside
  * scalar expressions) and in top-level {@code AND} conjuncts of {@code FILTER} (those become {@code
  * HAVING}), sort and limit. Anything else is refused with a violation that says why; the query is
@@ -85,12 +86,27 @@ public final class AggRewriter {
         this.concepts = new ConceptResolver(schema);
     }
 
+    private KQLParser.QueryContext parse(String text) {
+        try {
+            KQLReader reader = new KQLReader(text, true);
+            KQLParser.QueryContext ctx = reader.getQuery();
+            if (!reader.getPanic().isEmpty()) {
+                throw new Refusal("syntax error in the query");
+            }
+            return ctx;
+        } catch (Refusal r) {
+            throw r;
+        } catch (Exception e) {
+            throw new Refusal("syntax error: " + firstLine(e.getMessage()));
+        }
+    }
+
     public Rewritten rewrite(String kql) {
         if (kql == null || !AGG.matcher(kql).find()) {
             return Rewritten.unchanged(kql);
         }
         try {
-            return new Run(kql).run();
+            return new Driver(kql).run();
         } catch (Refusal r) {
             return Rewritten.refused(r.getMessage());
         }
@@ -171,8 +187,15 @@ public final class AggRewriter {
         private boolean rollup;
         private final List<KQLParser.FieldContext> keyFields = new ArrayList<>();
 
-        Run(String kql) {
+        // the names of its blocks, so that several selects of one query do not clash
+        private final String prefix;
+        // what it produced: the blocks, and the query that reads them
+        private List<String> blocks;
+        private String finalQuery;
+
+        Run(String kql, String prefix) {
             this.kql = kql;
+            this.prefix = prefix;
         }
 
         Rewritten run() {
@@ -257,21 +280,6 @@ public final class AggRewriter {
         }
 
         // ----- the input -----
-
-        private KQLParser.QueryContext parse(String text) {
-            try {
-                KQLReader reader = new KQLReader(text, true);
-                KQLParser.QueryContext ctx = reader.getQuery();
-                if (!reader.getPanic().isEmpty()) {
-                    throw new Refusal("syntax error in the query");
-                }
-                return ctx;
-            } catch (Refusal r) {
-                throw r;
-            } catch (Exception e) {
-                throw new Refusal("syntax error: " + firstLine(e.getMessage()));
-            }
-        }
 
         private void sources() {
             List<KQLParser.SourceContext> all = new ArrayList<>();
@@ -600,7 +608,12 @@ public final class AggRewriter {
             List<String> blocks = new ArrayList<>();
             for (Layer l : ls) {
                 StringBuilder d = new StringBuilder();
-                d.append("aggd").append(l.n).append(" AS (\n ").append(graph).append(filter);
+                d.append(prefix)
+                        .append("aggd")
+                        .append(l.n)
+                        .append(" AS (\n ")
+                        .append(graph)
+                        .append(filter);
                 d.append("\n FETCH DISTINCT ");
                 List<String> cols = new ArrayList<>();
                 for (int i = 0; i < l.identity.size(); i++) {
@@ -624,10 +637,13 @@ public final class AggRewriter {
                         m.add(u.expression + " " + u.column());
                     }
                     blocks.add(
-                            "aggm"
+                            prefix
+                                    + "aggm"
                                     + l.n
                                     + (rollup ? "s" + j : "")
-                                    + " AS (FIND aggd"
+                                    + " AS (FIND "
+                                    + prefix
+                                    + "aggd"
                                     + l.n
                                     + " x FETCH "
                                     + String.join(", ", m)
@@ -637,7 +653,7 @@ public final class AggRewriter {
 
             String source;
             if (ls.size() == 1 && !rollup) {
-                source = "aggm1";
+                source = prefix + "aggm1";
             } else {
                 List<String> branches = new ArrayList<>();
                 for (int j = keys.size(); j >= (rollup ? 0 : keys.size()); j--) {
@@ -658,15 +674,17 @@ public final class AggRewriter {
                                             + u.column());
                         }
                         branches.add(
-                                "FIND aggm"
+                                "FIND "
+                                        + prefix
+                                        + "aggm"
                                         + l.n
                                         + (rollup ? "s" + j : "")
                                         + " a FETCH "
                                         + String.join(", ", cols));
                     }
                 }
-                blocks.add("aggu AS (" + String.join("\n UNIONALL\n ", branches) + ")");
-                source = "aggu";
+                blocks.add(prefix + "aggu AS (" + String.join("\n UNIONALL\n ", branches) + ")");
+                source = prefix + "aggu";
             }
             if (rollup) {
                 // One row per grouping set and key; the set number is dropped in the query below.
@@ -678,10 +696,18 @@ public final class AggRewriter {
                 for (Use u : uses.values()) {
                     cols.add("max(t." + u.column() + ") " + u.column());
                 }
-                blocks.add("aggr AS (FIND aggu t FETCH " + String.join(", ", cols) + ")");
-                source = "aggr";
+                blocks.add(
+                        prefix
+                                + "aggr AS (FIND "
+                                + prefix
+                                + "aggu t FETCH "
+                                + String.join(", ", cols)
+                                + ")");
+                source = prefix + "aggr";
             }
             sb.append(String.join(",\n", blocks)).append("\n");
+            this.blocks = blocks;
+            int cut = sb.length();
 
             sb.append("FIND ").append(source).append(rollup ? " r" : " t");
             if (!having.isEmpty()) {
@@ -700,6 +726,7 @@ public final class AggRewriter {
             if (select.limitClause() != null) {
                 sb.append("\n ").append(text(select.limitClause()));
             }
+            this.finalQuery = sb.substring(cut);
             return sb.toString();
         }
 
@@ -792,6 +819,132 @@ public final class AggRewriter {
                 at = to;
             }
             return sb.append(src.substring(at)).toString();
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * Rewrites a whole query: every select that reads a measure directly, innermost first. The
+     * blocks of a select are put in front of the block (or the main query) that holds it, and the
+     * select itself is replaced by the query that reads them, so a sub-query, a WITH block of the
+     * user and a branch of a set operation each stay where they were and read their measures.
+     */
+    private final class Driver {
+        private final List<String> parts = new ArrayList<>(); // the WITH blocks, as text
+        private String main;
+        private final Map<String, String> provenance = new LinkedHashMap<>();
+        private final String original;
+
+        Driver(String original) {
+            this.original = original;
+        }
+
+        Rewritten run() {
+            KQLParser.QueryContext q = parse(original);
+            if (q.WITH() != null) {
+                for (var block : q.block()) {
+                    parts.add(text(block));
+                }
+            }
+            main = text(q.set());
+            int total = marked(q).size();
+            int round = 0;
+            while (true) {
+                int[] starts = new int[parts.size() + 1];
+                String full = assemble(starts);
+                q = parse(full);
+                List<KQLParser.SelectContext> marked = marked(q);
+                if (marked.isEmpty()) {
+                    return new Rewritten(full, provenance, List.of());
+                }
+                KQLParser.SelectContext s = innermost(marked);
+                Run run = new Run(text(s), total == 1 ? "" : "q" + (++round));
+                Rewritten r = run.run();
+
+                int at = s.start.getStartIndex();
+                int part = parts.size(); // the main query, unless the select is in a block
+                for (int i = 0; i < parts.size(); i++) {
+                    int end = i + 1 < parts.size() ? starts[i + 1] : starts[parts.size()];
+                    if (at >= starts[i] && at < end) {
+                        part = i;
+                        break;
+                    }
+                }
+                int base = part < parts.size() ? starts[part] : starts[parts.size()];
+                String old = part < parts.size() ? parts.get(part) : main;
+                String replaced =
+                        old.substring(0, at - base)
+                                + run.finalQuery
+                                + old.substring(s.stop.getStopIndex() + 1 - base);
+                if (part < parts.size()) {
+                    parts.set(part, replaced);
+                } else {
+                    main = replaced;
+                    if (!hasSelectAbove(s)) {
+                        r.measures().forEach(provenance::putIfAbsent);
+                    }
+                }
+                parts.addAll(part, run.blocks);
+            }
+        }
+
+        /** The text of the query, and where each part starts in it. */
+        private String assemble(int[] starts) {
+            if (parts.isEmpty()) {
+                starts[0] = 0;
+                return main;
+            }
+            StringBuilder sb = new StringBuilder("WITH\n");
+            for (int i = 0; i < parts.size(); i++) {
+                starts[i] = sb.length();
+                sb.append(parts.get(i)).append(i + 1 < parts.size() ? ",\n" : "\n");
+            }
+            starts[parts.size()] = sb.length();
+            return sb.append(main).toString();
+        }
+
+        /** The selects that read a measure directly (not through a select inside them). */
+        private List<KQLParser.SelectContext> marked(KQLParser.QueryContext q) {
+            List<KQLParser.FunctionContext> fns = new ArrayList<>();
+            collect(q, KQLParser.FunctionContext.class, fns);
+            fns.removeIf(f -> !"agg".equals(f.func.getText()));
+            java.util.Set<KQLParser.SelectContext> out = new java.util.LinkedHashSet<>();
+            for (var f : fns) {
+                for (ParseTree t = f.getParent(); t != null; t = t.getParent()) {
+                    if (t instanceof KQLParser.SelectContext sel) {
+                        out.add(sel);
+                        break;
+                    }
+                }
+            }
+            return new ArrayList<>(out);
+        }
+
+        private KQLParser.SelectContext innermost(List<KQLParser.SelectContext> marked) {
+            for (var s : marked) {
+                boolean hasInner = false;
+                for (var other : marked) {
+                    if (other != s
+                            && other.start.getStartIndex() >= s.start.getStartIndex()
+                            && other.stop.getStopIndex() <= s.stop.getStopIndex()) {
+                        hasInner = true;
+                    }
+                }
+                if (!hasInner) {
+                    return s;
+                }
+            }
+            return marked.get(0);
+        }
+
+        private boolean hasSelectAbove(KQLParser.SelectContext s) {
+            for (ParseTree t = s.getParent(); t != null; t = t.getParent()) {
+                if (t instanceof KQLParser.SelectContext) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
