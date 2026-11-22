@@ -1,6 +1,6 @@
 # The KQL the rewriter emits: spike results
 
-Status: **spike, DuckDB only.** Everything below was run against the Northwind DuckDB with koryki-core 0.4.2 and
+Status: **spike, six of eight dialects.** Everything below was run against the Northwind DuckDB with koryki-core 0.4.2 and
 compared with a plain query that has no fan-out. The spike code was thrown away; the patterns are here.
 
 Goal: rewrite a KQL query that reads measures with `agg(...)` into KQL without `agg`, so that each measure counts
@@ -58,6 +58,21 @@ FETCH t.k, max(t.v1) freight, max(t.v2) units
 | Integer measures | stay integers when the padding is `to_integer(NULL)` |
 | Expression as aggregate argument over a distinct layer | works (`unit_price * quantity`) |
 
+## Dialects
+
+The query with sum, count and avg was run on each dialect through the core Northwind engine and compared per country
+with two plain truth queries (all 21 countries, tolerance 1e-3). Run once, 2026-11-22.
+
+| Dialect | Result |
+|---|---|
+| DuckDB | equal (earlier runs) |
+| PostgreSQL 17, MariaDB 11.8, Oracle Free, Trino, SQLite | **equal**, 21 of 21 rows, no mismatch |
+| SQL Server | **not run**: the host is unreachable from here, the test skipped |
+| Snowflake | **not run**: cloud account, excluded |
+
+Typed NULL padding with `to_integer(NULL)` and `to_decimal(NULL, 18, 4)` renders and runs on all six.
+The spike test was a copy of each module's Northwind engine test; it is not kept.
+
 ## What does not work, and must never be emitted
 
 - **Joining the aggregate blocks.** `FIND m1 a, a [k=k] m2 b` fails: the columns of `[..=..]` are resolved against the
@@ -75,8 +90,7 @@ FETCH t.k, max(t.v1) freight, max(t.v2) units
 1. **Types.** The padding needs the result type of every measure: its concept (`typeFamily`), or the type core infers
    for the expression (`ai.koryki.iql.typing`). Typed NULL spellings exist for decimals and integers
    (`to_decimal(NULL, p, s)`, `to_integer(NULL)`); text, date, timestamp and boolean were not tried.
-2. **Dialects.** Only DuckDB. The other seven (`UNION ALL` of typed NULLs, CTE column lists, `DISTINCT` in a CTE) have
-   to run before anything is promised.
+2. **Dialects.** SQL Server and Snowflake still have to run before anything is promised for them.
 3. **Identity must be reachable.** KQL names only columns the model exposes as attributes. A measure whose table has
    a primary key column that is not an attribute cannot get a distinct layer. Refuse it, with that reason.
 4. **Not tried:** a filter or ordering on a measure (`FILTER agg(..) > n`, `ORDER`, `LIMIT`) on the outer query; group
