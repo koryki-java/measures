@@ -550,6 +550,10 @@ public final class AggRewriter {
                 }
                 if (p instanceof KQLParser.FunctionContext f
                         && !"agg".equals(f.func.getText())
+                        // a windowed aggregate runs after the grouping, over the values of the
+                        // groups: sum(agg(m)) OVER () is the total of the measure, not an
+                        // aggregate of rows
+                        && f.window() == null
                         && isAggregate(f.func.getText())) {
                     throw new Refusal("agg() inside the aggregate " + f.func.getText() + "()");
                 }

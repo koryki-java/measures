@@ -74,6 +74,8 @@ class AggRewriterFixturesTest extends FixturesTest {
                 List.of(
                         // two tables with measures
                         "FIND customers c, c VIA same_customer orders o, o VIA same_order order_details od FETCH c.country, agg(o.total_freight) freight, agg(od.units) units",
+                        // the share-of-total follow-up: a windowed total over the groups
+                        "FIND customers c, c VIA same_customer orders o, o VIA same_order order_details od FETCH c.country, agg(o.total_freight) freight, agg(o.total_freight) / sum(agg(o.total_freight)) OVER () share, agg(od.units) units",
                         // order_details -> orders is many to one, but orders is the home here
                         "FIND orders o, o VIA same_order order_details od FETCH o.ship_country, agg(o.total_freight) freight",
                         // orders -> order_details is one to many

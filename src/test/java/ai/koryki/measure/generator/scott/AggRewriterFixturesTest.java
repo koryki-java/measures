@@ -96,6 +96,15 @@ class AggRewriterFixturesTest extends FixturesTest {
     }
 
     @Test
+    void aWindowedTotalOfAMeasureIsAWindowOverTheGroups() {
+        // the share-of-total follow-up: the windowed sum adds up the groups, not the rows
+        String share =
+                "FIND dept d, d emp e FETCH d.dname dname, agg(e.emp_count) employees,"
+                        + " agg(e.emp_count) / sum(agg(e.emp_count)) OVER () share";
+        assertPlainOrLayered(share, true);
+    }
+
+    @Test
     void whatIsNoKeyOfAllRowsLeavesTheLayers() {
         // not known; a plain index; a partial unique index: none proves one row per join
         assertPlainOrLayered(withDeptKey(t -> {}), BY_DEPARTMENT, false);
