@@ -58,6 +58,28 @@ FETCH t.k, max(t.v1) freight, max(t.v2) units
 | Integer measures | stay integers when the padding is `to_integer(NULL)` |
 | Expression as aggregate argument over a distinct layer | works (`unit_price * quantity`) |
 
+## Filters, HAVING, ordering (DuckDB)
+
+Germany, freight (orders) and units (order lines), compared with plain truth queries.
+
+| Case | How it is written | Result |
+|---|---|---|
+| Filter on a dimension | the original `FILTER` is copied into **every** distinct layer | equal (11283.28 / 9213) |
+| Filter on another dataset than the measure (`od.product_id < 30`) | the same copy; the `DISTINCT` layer counts each order once | freight 8594.65 equals the distinct truth; the plain fan-out query gives **13539.01** |
+| Measure with its own condition | `case(cond, value)` inside the aggregate, over the distinct layer: `sum(case(x.f > 100, x.f))`, `count(case(x.f > 100, x.oid))` | equal (7863.75, 6987, count 32) |
+| Filter on measures (HAVING) | on the **outermost** `FIND`: `FILTER max(t.v1) > 10000 AND max(t.v2) > 9250` | equal (USA only); renders as `HAVING` |
+| Order and limit on a measure | on the outermost `FIND`: `max(t.v1) freight DESC` ... `LIMIT 3` | equal (USA, Germany, Austria) |
+
+Rules that follow:
+
+- A measure's own condition goes **into its aggregate**, never into the layer's `FILTER`: the layer is shared by all
+  measures of the table, and a `FILTER` there would change them all.
+- The sort direction follows the header: `expr header DESC`. `expr DESC header` is a syntax error.
+- `WITH` cannot be nested: `FIND (WITH ...)` and a `WITH` inside a block are refused. HAVING, ordering and limit
+  therefore have to be written on the outermost `FIND`, and the rewriter has to merge the `WITH` blocks the user
+  query already has with its own.
+- A threshold above every group returns no rows without an error (a first test used 20000 and looked broken).
+
 ## Dialects
 
 The query with sum, count and avg was run on each dialect through the core Northwind engine and compared per country
@@ -93,9 +115,9 @@ The spike test was a copy of each module's Northwind engine test; it is not kept
 2. **Dialects.** SQL Server and Snowflake still have to run before anything is promised for them.
 3. **Identity must be reachable.** KQL names only columns the model exposes as attributes. A measure whose table has
    a primary key column that is not an attribute cannot get a distinct layer. Refuse it, with that reason.
-4. **Not tried:** a filter or ordering on a measure (`FILTER agg(..) > n`, `ORDER`, `LIMIT`) on the outer query; group
+4. **Not tried:** filters, HAVING, ordering and limit on dialects other than DuckDB; group
    keys that are expressions (`month(o.order_date)`); outer links (`+`) in the original query; raw aggregates mixed
-   with `agg()` in one query (refuse); measures of one table with different filters; large data (each layer repeats
+   with `agg()` in one query (refuse); user queries that have `WITH` blocks of their own; large data (each layer repeats
    the whole join tree and does a `DISTINCT`).
 5. **Where the input is parsed.** The generator reads the original KQL with `KQLReader`, so that the names of the
    original (aliases, links, the join tree) can be copied into the layers. Not yet tried.
