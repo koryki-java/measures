@@ -32,7 +32,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <pre>
  * queries/kql/measures/&lt;name&gt;.kql                    the query, with agg()
  * expected/kql/measures/rewrite/&lt;name&gt;.kql           what the rewriter returns
- * expected/kql/measures/provenance/&lt;name&gt;.txt        output column : table.measure
+ * expected/kql/measures/provenance/&lt;name&gt;.txt        output column : table.measure, and
+ * output column ~ table.measure, ... for a column computed from measures
  * expected/kql/measures/refusal/&lt;name&gt;.txt           why a query named invalid* is refused
  * expected/kql/measures/csv/&lt;name&gt;.csv, .json        the result of the rewritten query, and its types
  * expected/duckdb/measures/sql/&lt;name&gt;.sql            its SQL on DuckDB
@@ -95,11 +96,22 @@ public abstract class FixturesTest {
             assertSame(kql, r.kql(), "a query without agg is returned as it is");
         }
 
+        if (r.map() != null) {
+            r.map().check();
+        }
+
         Path rewritten = kindDir("rewrite", name, ".kql");
         golden(r.kql(), rewritten);
         golden(
-                r.measures().entrySet().stream()
-                        .map(e -> e.getKey() + " : " + e.getValue())
+                Stream.concat(
+                                r.measures().entrySet().stream()
+                                        .map(e -> e.getKey() + " : " + e.getValue()),
+                                r.derived().entrySet().stream()
+                                        .map(
+                                                e ->
+                                                        e.getKey()
+                                                                + " ~ "
+                                                                + String.join(", ", e.getValue())))
                         .collect(Collectors.joining("\n")),
                 kindDir("provenance", name, ".txt"));
 

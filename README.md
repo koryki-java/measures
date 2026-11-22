@@ -69,6 +69,23 @@ twice or equal to a column, two concepts, and a concept the schema cannot resolv
 expression, and it does not ask for a primary key: the identity of the rows is for whoever evaluates the
 measure to ask for.
 
+### Ranges
+
+Core validates and renders the **rewritten** KQL, so the `Range` of a `Violation` or a `RangeException`
+points into text the user never wrote. `Rewritten.map()` carries it back:
+
+```java
+Range shown = r.map().toOriginal(violation.getRange());
+```
+
+A piece copied from the query (sources, links, filters, group keys, `LIMIT`) maps exactly, character for
+character. A piece the rewriter made (the layer and aggregate blocks, `max(t.v1)`) maps to what caused it:
+the `agg(...)` call, the fetch item, or else the select. The map is built across all passes, so it also
+holds for `WITH` blocks, sub-queries and set operations. A query without `agg` maps to itself.
+
+The name `agg` is reserved: core's `FunctionValidator` refuses an `agg(...)` that reaches it
+un-rewritten, at the call, instead of passing it on to the database.
+
 ### Rewrite
 
 ```java
@@ -78,7 +95,9 @@ Rewritten r = rewriter.rewrite(
         + "FETCH c.country, agg(o.total_freight) freight, agg(od.units) units");
 r.kql();        // plain KQL: run it with any koryki engine, on any dialect
 r.measures();   // {freight=orders.total_freight, units=order_details.units}
+r.derived();    // columns computed from measures: {per_order=[orders.total_freight, orders.order_count]}
 r.violations(); // why a query was refused (then kql() is null)
+r.map();        // SourceMap: carries a Range of the rewritten kql() back to the query the user wrote
 ```
 
 Supported: `FIND` queries (also as `WITH` blocks, scalar sub-queries and branches of a set operation) with inner and optional (`+`) links, group keys, `agg` in `FETCH` (also inside scalar

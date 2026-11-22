@@ -174,7 +174,7 @@ it, and is itself replaced by the query that reads them. Blocks of the user stay
 read come first (the order matters, KQL sees a block only after it is defined). A block, a scalar sub-query and an
 `IN (FIND block ...)` can all be read from the main query. Two consequences: a block with `agg` and a sort and limit
 can be a filter ("the two departments with the largest payroll", Ossie b03), and an outer aggregate over `agg`
-values is a plain aggregate over a block (Ossie a12). Provenance lists the output columns of the main query only,
+values is a plain aggregate over a block (Ossie a12). Provenance lists the output columns of the main query only (`measures()` for a column that is exactly one measure, `derived()` for a column computed from measures through an expression such as `round(agg(o.avg_freight), 2)` or a ratio of two, with the measures it reads; a column without a header is in neither),
 and for a set operation the first branch that names a header. Checked: Ossie a11, b03, a12; the Northwind
 `with_block`, `subquery_scalar` (against plain SQL) and `union_branches`, on six dialects. A sub-query that reads an
 alias of the main query (correlated) is not supported.

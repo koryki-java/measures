@@ -162,6 +162,7 @@ public final class AggRewriter {
         final int n;
         String expression; // over the layer: bare names replaced by x.cN
         String nullOf;
+        KQLParser.FunctionContext call; // the first agg(...) that reads it, for the source map
 
         Use(Layer layer, Measure measure, int n) {
             this.layer = layer;
@@ -176,11 +177,13 @@ public final class AggRewriter {
 
     private final class Run {
         private final String kql;
+        private final Mapped in;
         private KQLParser.SelectContext select;
         private final Map<String, String> entityOfAlias = new LinkedHashMap<>();
         private final Map<String, Layer> layers = new LinkedHashMap<>();
         private final Map<String, Use> uses = new LinkedHashMap<>();
         private final Map<String, String> provenance = new LinkedHashMap<>();
+        private final Map<String, List<String>> derived = new LinkedHashMap<>();
         // An optional link (+) in the source graph: a layer then holds NULL-padded rows.
         private boolean outer;
         // FETCH ROLLUP: one evaluation per grouping set, the keys dropped from the right.
@@ -193,9 +196,14 @@ public final class AggRewriter {
         private List<String> blocks;
         private String finalQuery;
 
-        Run(String kql, String prefix) {
-            this.kql = kql;
+        Run(Mapped in, String prefix) {
+            this.in = in;
+            this.kql = in.text;
             this.prefix = prefix;
+        }
+
+        Mapped decode(String marked) {
+            return Mapped.decode(marked, in);
         }
 
         Rewritten run() {
@@ -226,7 +234,7 @@ public final class AggRewriter {
                 conjuncts(select.filterClause().logical_expression(), parts);
                 for (var part : parts) {
                     if (aggCalls(part).isEmpty()) {
-                        String text = text(part);
+                        String text = copy(part);
                         rows.add(part.unary_logical_expression() != null ? text : "(" + text + ")");
                     } else {
                         having.add(part);
@@ -255,7 +263,7 @@ public final class AggRewriter {
                                         + "'");
                     }
                     keyOf.put(item, keys.size());
-                    keys.add(text(e));
+                    keys.add(copy(e));
                     keyFields.add(e.field() != null && e.getChildCount() == 1 ? e.field() : null);
                 }
             }
@@ -276,7 +284,8 @@ public final class AggRewriter {
                 throw new Refusal("ROLLUP needs at least one group key");
             }
             prepare();
-            return new Rewritten(build(items, keyOf, keys, rows, having), provenance, List.of());
+            return new Rewritten(
+                    build(items, keyOf, keys, rows, having), provenance, derived, List.of());
         }
 
         // ----- the input -----
@@ -386,6 +395,7 @@ public final class AggRewriter {
                     alias + "." + name,
                     k -> {
                         Use u = new Use(layer, measure.get(), uses.size() + 1);
+                        u.call = call;
                         layer.uses.add(u);
                         return u;
                     });
@@ -635,7 +645,7 @@ public final class AggRewriter {
                         m.add("x.k" + (i + 1) + " k" + (i + 1));
                     }
                     for (Use u : l.uses) {
-                        m.add(u.expression + " " + u.column());
+                        m.add(anchor(u.call, u.expression + " " + u.column()));
                     }
                     blocks.add(
                             prefix
@@ -725,7 +735,7 @@ public final class AggRewriter {
             }
             sb.append("\n FETCH ").append(String.join(", ", out));
             if (select.limitClause() != null) {
-                sb.append("\n ").append(text(select.limitClause()));
+                sb.append("\n ").append(copy(select.limitClause()));
             }
             this.finalQuery = sb.substring(cut);
             return sb.toString();
@@ -736,9 +746,16 @@ public final class AggRewriter {
                     select.link().isEmpty()
                             ? select.source()
                             : select.link(select.link().size() - 1);
-            return select.start
-                    .getInputStream()
-                    .getText(Interval.of(select.start.getStartIndex(), last.stop.getStopIndex()));
+            return Mapped.mark(
+                    'V',
+                    select.start.getStartIndex(),
+                    last.stop.getStopIndex(),
+                    select.start
+                            .getInputStream()
+                            .getText(
+                                    Interval.of(
+                                            select.start.getStartIndex(),
+                                            last.stop.getStopIndex())));
         }
 
         private String outerItem(
@@ -768,6 +785,14 @@ public final class AggRewriter {
                     provenance.put(
                             header,
                             tableOf(calls.get(0)) + "." + measureOf(calls.get(0)).getName());
+                } else if (header != null && !calls.isEmpty()) {
+                    // computed from measures: round(agg(..), 2), a ratio of two
+                    derived.put(
+                            header,
+                            calls.stream()
+                                    .map(c -> tableOf(c) + "." + measureOf(c).getName())
+                                    .distinct()
+                                    .toList());
                 }
             }
             if (header != null) {
@@ -785,7 +810,22 @@ public final class AggRewriter {
             if (item.idx != null) {
                 sb.append(' ').append(item.idx.getText());
             }
-            return sb.toString();
+            return anchor(item, sb.toString());
+        }
+
+        /** A copy of the node's text from the input: it maps back character for character. */
+        private String copy(ParserRuleContext ctx) {
+            return Mapped.mark('V', ctx.start.getStartIndex(), ctx.stop.getStopIndex(), text(ctx));
+        }
+
+        /** Text from {@code offset} of the input, that has been cut up by the caller. */
+        private String verbatim(int offset, String text) {
+            return Mapped.mark('V', offset, offset + text.length() - 1, text);
+        }
+
+        /** Text the rewriter made: all of it maps back to the node that caused it. */
+        private String anchor(ParserRuleContext ctx, String text) {
+            return Mapped.mark('A', ctx.start.getStartIndex(), ctx.stop.getStopIndex(), text);
         }
 
         private Use useOf(KQLParser.FunctionContext call) {
@@ -812,14 +852,16 @@ public final class AggRewriter {
             for (var call : calls) {
                 int from = call.start.getStartIndex() - base;
                 int to = call.stop.getStopIndex() - base + 1;
-                sb.append(src, at, from)
+                sb.append(verbatim(base + at, src.substring(at, from)))
                         .append(
-                                rollup
-                                        ? "r." + useOf(call).column()
-                                        : "max(t." + useOf(call).column() + ")");
+                                anchor(
+                                        call,
+                                        rollup
+                                                ? "r." + useOf(call).column()
+                                                : "max(t." + useOf(call).column() + ")"));
                 at = to;
             }
-            return sb.append(src.substring(at)).toString();
+            return sb.append(verbatim(base + at, src.substring(at))).toString();
         }
     }
 
@@ -832,9 +874,10 @@ public final class AggRewriter {
      * user and a branch of a set operation each stay where they were and read their measures.
      */
     private final class Driver {
-        private final List<String> parts = new ArrayList<>(); // the WITH blocks, as text
-        private String main;
+        private final List<Mapped> parts = new ArrayList<>(); // the WITH blocks, as text
+        private Mapped main;
         private final Map<String, String> provenance = new LinkedHashMap<>();
+        private final Map<String, List<String>> derived = new LinkedHashMap<>();
         private final String original;
 
         Driver(String original) {
@@ -845,22 +888,32 @@ public final class AggRewriter {
             KQLParser.QueryContext q = parse(original);
             if (q.WITH() != null) {
                 for (var block : q.block()) {
-                    parts.add(text(block));
+                    parts.add(Mapped.identity(text(block), block.start.getStartIndex()));
                 }
             }
-            main = text(q.set());
+            main = Mapped.identity(text(q.set()), q.set().start.getStartIndex());
             int total = marked(q).size();
             int round = 0;
             while (true) {
                 int[] starts = new int[parts.size() + 1];
-                String full = assemble(starts);
+                Mapped fullMapped = assemble(starts);
+                String full = fullMapped.text;
                 q = parse(full);
                 List<KQLParser.SelectContext> marked = marked(q);
                 if (marked.isEmpty()) {
-                    return new Rewritten(full, provenance, List.of());
+                    return new Rewritten(
+                            full,
+                            provenance,
+                            derived,
+                            List.of(),
+                            SourceMap.of(original, fullMapped));
                 }
                 KQLParser.SelectContext s = innermost(marked);
-                Run run = new Run(text(s), total == 1 ? "" : "q" + (++round));
+                Run run =
+                        new Run(
+                                fullMapped.slice(
+                                        s.start.getStartIndex(), s.stop.getStopIndex() + 1),
+                                total == 1 ? "" : "q" + (++round));
                 Rewritten r = run.run();
 
                 int at = s.start.getStartIndex();
@@ -873,36 +926,45 @@ public final class AggRewriter {
                     }
                 }
                 int base = part < parts.size() ? starts[part] : starts[parts.size()];
-                String old = part < parts.size() ? parts.get(part) : main;
-                String replaced =
-                        old.substring(0, at - base)
-                                + run.finalQuery
-                                + old.substring(s.stop.getStopIndex() + 1 - base);
+                Mapped old = part < parts.size() ? parts.get(part) : main;
+                Mapped replaced =
+                        Mapped.concat(
+                                old.slice(0, at - base),
+                                run.decode(run.finalQuery),
+                                old.slice(s.stop.getStopIndex() + 1 - base, old.length()));
                 if (part < parts.size()) {
                     parts.set(part, replaced);
                 } else {
                     main = replaced;
                     if (!hasSelectAbove(s)) {
                         r.measures().forEach(provenance::putIfAbsent);
+                        r.derived().forEach(derived::putIfAbsent);
                     }
                 }
-                parts.addAll(part, run.blocks);
+                parts.addAll(part, run.blocks.stream().map(run::decode).toList());
             }
         }
 
         /** The text of the query, and where each part starts in it. */
-        private String assemble(int[] starts) {
+        private Mapped assemble(int[] starts) {
             if (parts.isEmpty()) {
                 starts[0] = 0;
                 return main;
             }
-            StringBuilder sb = new StringBuilder("WITH\n");
+            int last = Math.max(0, original.length() - 1);
+            List<Mapped> out = new ArrayList<>();
+            out.add(Mapped.generated("WITH\n", 0, last));
+            int length = out.get(0).length();
             for (int i = 0; i < parts.size(); i++) {
-                starts[i] = sb.length();
-                sb.append(parts.get(i)).append(i + 1 < parts.size() ? ",\n" : "\n");
+                starts[i] = length;
+                out.add(parts.get(i));
+                Mapped sep = Mapped.generated(i + 1 < parts.size() ? ",\n" : "\n", 0, last);
+                out.add(sep);
+                length += parts.get(i).length() + sep.length();
             }
-            starts[parts.size()] = sb.length();
-            return sb.append(main).toString();
+            starts[parts.size()] = length;
+            out.add(main);
+            return Mapped.concat(out);
         }
 
         /** The selects that read a measure directly (not through a select inside them). */
