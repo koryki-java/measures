@@ -112,4 +112,41 @@ class AggRewriterFixturesTest extends FixturesTest {
         Range inRewritten = new Range(line, col, line, col + "od.product_id".length());
         assertEquals(at(2, "od.product_id"), r.map().toOriginal(inRewritten));
     }
+
+    private static final String HEAD =
+            "FIND customers c, c VIA same_customer orders o, o VIA same_order order_details od\n";
+
+    private Range refusedAt(String kql) {
+        Rewritten r = rewriter.rewrite(kql);
+        assertEquals(1, r.problems().size(), () -> String.valueOf(r.violations()));
+        assertEquals(r.violations().get(0), r.problems().get(0).message());
+        return r.problems().get(0).range();
+    }
+
+    @Test
+    void aRefusalPointsAtTheCallThatCausedIt() {
+        // line 2: FETCH c.country, agg(o.nothing)
+        assertEquals(new Range(2, 18, 2, 32), refusedAt(HEAD + "FETCH c.country, agg(o.nothing)"));
+    }
+
+    @Test
+    void aRefusalPointsAtTheFetchItem() {
+        String item = "agg(o.total_freight) + o.freight";
+        assertEquals(
+                new Range(2, 18, 2, 18 + item.length()),
+                refusedAt(HEAD + "FETCH c.country, " + item));
+    }
+
+    @Test
+    void aRefusalWithoutAPlaceIsTheWholeClause() {
+        // FETCH DISTINCT: the fetch clause
+        Range r = refusedAt(HEAD + "FETCH DISTINCT c.country, agg(o.total_freight)");
+        assertEquals(2, r.getStart().getLine());
+    }
+
+    @Test
+    void aSyntaxErrorPointsAtTheToken() {
+        Range r = refusedAt(HEAD + "FETCH c.country, agg(o.total_freight");
+        assertEquals(2, r.getStart().getLine());
+    }
 }

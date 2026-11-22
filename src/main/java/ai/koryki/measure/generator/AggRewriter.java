@@ -91,13 +91,20 @@ public final class AggRewriter {
             KQLReader reader = new KQLReader(text, true);
             KQLParser.QueryContext ctx = reader.getQuery();
             if (!reader.getPanic().isEmpty()) {
-                throw new Refusal("syntax error in the query");
+                var at = reader.getPanic().get(0);
+                throw new Refusal("syntax error in the query").panic(at.getLine(), at.getCol());
             }
             return ctx;
         } catch (Refusal r) {
             throw r;
         } catch (Exception e) {
-            throw new Refusal("syntax error: " + firstLine(e.getMessage()));
+            Refusal r = new Refusal("syntax error: " + firstLine(e.getMessage()));
+            if (e instanceof ai.koryki.antlr.PositionException pe) {
+                r.panic(pe.getLine(), pe.getPos());
+            } else if (e instanceof ai.koryki.antlr.RangeException re && re.getRange() != null) {
+                r.panic(re.getRange().getStart().getLine(), re.getRange().getStart().getPos());
+            }
+            throw r;
         }
     }
 
@@ -108,7 +115,11 @@ public final class AggRewriter {
         try {
             return new Driver(kql).run();
         } catch (Refusal r) {
-            return Rewritten.refused(r.getMessage());
+            if (!r.located()) {
+                r.from = 0;
+                r.to = Math.max(0, kql.length() - 1);
+            }
+            return Rewritten.refused(r.getMessage(), SourceMap.range(kql, r.from, r.to));
         }
     }
 
@@ -126,8 +137,46 @@ public final class AggRewriter {
     }
 
     private static final class Refusal extends RuntimeException {
+        // where it is in the input of the Run that threw it (relative) or, once known, in the
+        // user's query (absolute); -1 when not yet known
+        int from = -1;
+        int to = -1;
+        // line and column (1-based) of the token the parser stopped at; 0 when unknown
+        int panicFrom = -1;
+        int panicTo = -1;
+
         Refusal(String message) {
             super(message, null, false, false);
+        }
+
+        Refusal panic(int line, int col) {
+            panicFrom = line;
+            panicTo = col;
+            return this;
+        }
+
+        boolean located() {
+            return from >= 0;
+        }
+
+        /** Where it is, in the user's query: the span of {@code ctx} of the input {@code in}. */
+        void locate(ParserRuleContext ctx, Mapped in) {
+            if (located()) {
+                return;
+            }
+            int[] span;
+            if (in.length() == 0) {
+                span = new int[] {0, 0};
+            } else if (ctx == null || ctx.start == null || ctx.stop == null) {
+                span = in.span(0, in.length() - 1);
+            } else {
+                span =
+                        in.span(
+                                Math.min(ctx.start.getStartIndex(), in.length() - 1),
+                                Math.min(ctx.stop.getStopIndex(), in.length() - 1));
+            }
+            from = span[0];
+            to = span[1];
         }
     }
 
@@ -179,6 +228,8 @@ public final class AggRewriter {
         private final String kql;
         private final Mapped in;
         private KQLParser.SelectContext select;
+        // what it is working on: where a refusal that names nothing is put
+        private ParserRuleContext focus;
         private final Map<String, String> entityOfAlias = new LinkedHashMap<>();
         private final Map<String, Layer> layers = new LinkedHashMap<>();
         private final Map<String, Use> uses = new LinkedHashMap<>();
@@ -207,7 +258,17 @@ public final class AggRewriter {
         }
 
         Rewritten run() {
+            try {
+                return run0();
+            } catch (Refusal r) {
+                r.locate(focus != null ? focus : select, in);
+                throw r;
+            }
+        }
+
+        private Rewritten run0() {
             KQLParser.QueryContext query = parse(kql);
+            focus = query;
             if (query.WITH() != null) {
                 throw new Refusal("a query with its own WITH blocks is not supported yet");
             }
@@ -215,9 +276,11 @@ public final class AggRewriter {
                 throw new Refusal("a set operation or a bracketed query is not supported yet");
             }
             select = query.set().select();
+            focus = select;
             sources();
 
             KQLParser.FetchClauseContext fetch = select.fetchClause();
+            focus = fetch != null ? fetch : select;
             if (fetch == null) {
                 throw new Refusal("agg() needs a FETCH clause");
             }
@@ -248,6 +311,7 @@ public final class AggRewriter {
             Map<KQLParser.FetchItemContext, Integer> keyOf = new LinkedHashMap<>();
             boolean any = !having.isEmpty();
             for (var item : items) {
+                focus = item;
                 var e = item.expression();
                 if (!aggCalls(e).isEmpty()) {
                     any = true;
@@ -268,11 +332,13 @@ public final class AggRewriter {
                 }
             }
             for (var h : having) {
+                focus = h;
                 noFieldsOutsideAgg(h, "a predicate on a measure also reads a column");
                 for (var call : aggCalls(h)) {
                     use(call);
                 }
             }
+            focus = select;
             if (!any || uses.isEmpty()) {
                 throw new Refusal("agg() was not found in a FETCH item or in the FILTER");
             }
@@ -283,6 +349,7 @@ public final class AggRewriter {
             if (rollup && keys.isEmpty()) {
                 throw new Refusal("ROLLUP needs at least one group key");
             }
+            focus = select;
             prepare();
             return new Rewritten(
                     build(items, keyOf, keys, rows, having), provenance, derived, List.of());
@@ -344,6 +411,7 @@ public final class AggRewriter {
         }
 
         private void use(KQLParser.FunctionContext call) {
+            focus = call;
             if (call.window() != null) {
                 throw new Refusal("agg() takes no OVER clause");
             }
@@ -412,6 +480,7 @@ public final class AggRewriter {
 
         private void prepare() {
             for (Layer layer : layers.values()) {
+                focus = layer.uses.isEmpty() ? select : layer.uses.get(0).call;
                 List<Column> pk =
                         layer.table.getColumns().stream()
                                 .filter(c -> c.getPkPos() > 0)
@@ -529,6 +598,7 @@ public final class AggRewriter {
         }
 
         private String nullOf(Layer layer, Use u, KQLParser.ExpressionContext e) {
+            focus = u.call;
             Concept c = u.measure.getConcept();
             if (c == null && u.measure.getConceptRef() != null) {
                 c = concepts.concept(u.measure.getConceptRef());
@@ -572,6 +642,7 @@ public final class AggRewriter {
         /** The NULL that stands in for group key {@code i} on the rows of a rolled-up total. */
         private String keyNull(int i) {
             KQLParser.FieldContext f = keyFields.get(i);
+            focus = f != null ? f : select.fetchClause();
             if (f == null) {
                 throw new Refusal("ROLLUP needs plain columns as group keys, not expressions");
             }
@@ -885,7 +956,24 @@ public final class AggRewriter {
         }
 
         Rewritten run() {
-            KQLParser.QueryContext q = parse(original);
+            KQLParser.QueryContext q;
+            try {
+                q = parse(original);
+            } catch (Refusal r) {
+                // a syntax error of the query itself: the parser's position is the user's
+                if (r.panicFrom > 0 && r.panicTo > 0 && !r.located()) {
+                    int line = 1;
+                    int i = 0;
+                    while (line < r.panicFrom && i < original.length()) {
+                        if (original.charAt(i++) == '\n') {
+                            line++;
+                        }
+                    }
+                    r.from = Math.min(i + r.panicTo - 1, original.length() - 1);
+                    r.to = r.from;
+                }
+                throw r;
+            }
             if (q.WITH() != null) {
                 for (var block : q.block()) {
                     parts.add(Mapped.identity(text(block), block.start.getStartIndex()));

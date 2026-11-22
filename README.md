@@ -83,6 +83,10 @@ character. A piece the rewriter made (the layer and aggregate blocks, `max(t.v1)
 the `agg(...)` call, the fetch item, or else the select. The map is built across all passes, so it also
 holds for `WITH` blocks, sub-queries and set operations. A query without `agg` maps to itself.
 
+A refusal has its range too: `r.problems()` pairs each message of `r.violations()` with the `Range` of the
+`agg(...)` call, fetch item, clause or (for a syntax error) token in the **user's** query, so nothing needs to be
+mapped. A refusal that names nothing is put on the part the rewriter was working on, at worst the whole query.
+
 The name `agg` is reserved: core's `FunctionValidator` refuses an `agg(...)` that reaches it
 un-rewritten, at the call, instead of passing it on to the database.
 

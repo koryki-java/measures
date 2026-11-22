@@ -143,6 +143,11 @@ public final class SourceMap {
         return new Range(position(original, lo), position(original, hi + 1));
     }
 
+    /** The range of the characters {@code from..to} (inclusive) of a text. */
+    static Range range(String text, int from, int to) {
+        return new Range(position(text, from), position(text, Math.max(from, to) + 1));
+    }
+
     /** Line and column (both 1-based) of an offset. */
     private static Position position(String text, int offset) {
         int line = 1;

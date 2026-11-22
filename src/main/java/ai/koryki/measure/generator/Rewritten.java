@@ -16,6 +16,8 @@ import java.util.Map;
  *     table.measure} in the order of their first use. Not in {@link #measures()}: such a column is
  *     not the measure's value. A column without a header has no name to key it, so no entry
  * @param violations why the query was refused; empty when it was not
+ * @param problems the same reasons as {@link #violations()}, each with its range in the input
+ *     query; empty when the query was not refused
  * @param map where each part of {@link #kql()} comes from in the input, to carry the ranges of
  *     core's violations and exceptions back to the user's query; {@code null} when the query was
  *     refused
@@ -25,7 +27,26 @@ public record Rewritten(
         Map<String, String> measures,
         Map<String, List<String>> derived,
         List<String> violations,
-        SourceMap map) {
+        SourceMap map,
+        List<Problem> problems) {
+
+    /**
+     * One reason a query was refused, and where in the query the user wrote it.
+     *
+     * @param message the reason
+     * @param range the place, in the user's query (stop exclusive, as core's ranges are)
+     */
+    public record Problem(String message, ai.koryki.antlr.Range range) {}
+
+    /** A result with a source map and no problems with a place. */
+    public Rewritten(
+            String kql,
+            Map<String, String> measures,
+            Map<String, List<String>> derived,
+            List<String> violations,
+            SourceMap map) {
+        this(kql, measures, derived, violations, map, List.of());
+    }
 
     /** A result with no source map. */
     public Rewritten(
@@ -46,6 +67,7 @@ public record Rewritten(
         measures = java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(measures));
         derived = java.util.Collections.unmodifiableMap(copyOfLists(derived));
         violations = List.copyOf(violations);
+        problems = problems == null ? List.of() : List.copyOf(problems);
     }
 
     private static Map<String, List<String>> copyOfLists(Map<String, List<String>> in) {
@@ -63,7 +85,8 @@ public record Rewritten(
                 kql, Map.of(), Map.of(), List.of(), kql == null ? null : SourceMap.identity(kql));
     }
 
-    static Rewritten refused(String why) {
-        return new Rewritten(null, Map.of(), List.of(why));
+    static Rewritten refused(String why, ai.koryki.antlr.Range range) {
+        return new Rewritten(
+                null, Map.of(), Map.of(), List.of(why), null, List.of(new Problem(why, range)));
     }
 }
