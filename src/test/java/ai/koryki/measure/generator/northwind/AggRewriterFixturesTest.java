@@ -16,6 +16,7 @@ import ai.koryki.kql.EngineBuilder;
 import ai.koryki.kql.HeaderInfo;
 import ai.koryki.measure.generator.AggRewriter;
 import ai.koryki.measure.generator.FixturesTest;
+import ai.koryki.measure.generator.MeasureQueryRewriter;
 import ai.koryki.measure.generator.Rewritten;
 import java.io.IOException;
 import java.time.ZoneId;
@@ -163,5 +164,47 @@ class AggRewriterFixturesTest extends FixturesTest {
         // what was in front of it is unchanged
         int call = kql.indexOf("max(t.v1)");
         assertEquals(at(3, "agg(o.total_freight)"), map.toOriginal(call, call + 9));
+    }
+
+    private ai.koryki.kql.Generator<HeaderInfo> generator() {
+        Schema schema = CatalogLoader.db(NorthwindService.DB);
+        ai.koryki.iql.LinkResolver resolver =
+                NorthwindService.resolver().queryRewriter(new MeasureQueryRewriter(rewriter));
+        return new ai.koryki.kql.Generator<>(
+                resolver, new SqlQueryRenderer(ZoneId.of("UTC")), HeaderInfo::new);
+    }
+
+    @Test
+    void theHookTranspilesAQueryThatReadsAMeasure() {
+        String sql = generator().toSql(QUERY);
+        org.junit.jupiter.api.Assertions.assertTrue(sql.contains("aggd1"), sql);
+    }
+
+    @Test
+    void theHookReportsARefusalAtTheCall() {
+        var violations = generator().validateKQL(HEAD + "FETCH c.country, agg(o.nothing) x");
+        assertEquals(1, violations.size());
+        assertEquals(new Range(2, 18, 2, 32), violations.get(0).getRange());
+    }
+
+    @Test
+    void theHookReportsAViolationOfTheRewrittenQueryInTheOriginal() {
+        var violations =
+                generator()
+                        .validateKQL(
+                                HEAD
+                                        + "FILTER o.no_such_column > 1\n"
+                                        + "FETCH c.country, agg(o.total_freight) f");
+        org.junit.jupiter.api.Assertions.assertFalse(violations.isEmpty());
+        for (var v : violations) {
+            assertEquals(2, v.getRange().getStart().getLine(), v.toString());
+        }
+    }
+
+    @Test
+    void formattingShowsTheQueryThatWasAsked() {
+        String formatted = generator().formatKQL(QUERY);
+        org.junit.jupiter.api.Assertions.assertTrue(formatted.contains("agg("), formatted);
+        org.junit.jupiter.api.Assertions.assertFalse(formatted.contains("aggd1"), formatted);
     }
 }

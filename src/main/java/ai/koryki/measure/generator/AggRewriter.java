@@ -113,7 +113,23 @@ public final class AggRewriter {
             return Rewritten.unchanged(kql);
         }
         try {
-            return new Driver(kql).run();
+            int cut = visualizeStart(kql);
+            if (cut < 0) {
+                return new Driver(kql).run();
+            }
+            // A VISUALIZE clause is not part of what is rewritten: cut off before, put back after.
+            String data = kql.substring(0, cut).stripTrailing();
+            if (!AGG.matcher(data).find()) {
+                return Rewritten.unchanged(kql);
+            }
+            Rewritten r = new Driver(data).run();
+            return new Rewritten(
+                    r.kql() + "\n" + kql.substring(cut),
+                    r.measures(),
+                    r.derived(),
+                    r.violations(),
+                    r.map().withTail(kql, cut, "\n"),
+                    r.problems());
         } catch (Refusal r) {
             if (!r.located()) {
                 r.from = 0;
@@ -121,6 +137,26 @@ public final class AggRewriter {
             }
             return Rewritten.refused(r.getMessage(), SourceMap.range(kql, r.from, r.to));
         }
+    }
+
+    /**
+     * Where the VISUALIZE clause starts, or -1 where there is none or the query will not parse. The
+     * clause belongs to the larger grammar of koryki-kqlvisualize, which this project does not
+     * compile against, so it is found by the name of its node.
+     */
+    private int visualizeStart(String kql) {
+        try {
+            KQLParser.QueryContext q = parse(kql);
+            for (int i = 0; i < q.getChildCount(); i++) {
+                if (q.getChild(i) instanceof ParserRuleContext c
+                        && "VisualizeClauseContext".equals(c.getClass().getSimpleName())) {
+                    return c.getStart().getStartIndex();
+                }
+            }
+        } catch (Refusal r) {
+            // reported with its position by the rewrite itself
+        }
+        return -1;
     }
 
     /**
