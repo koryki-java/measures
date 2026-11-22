@@ -1,0 +1,91 @@
+plugins {
+    // java-library: koryki-core is 'api' -- the measures are checked against its Schema, and the
+    // public signatures take and return its classes.
+    id 'java-library'
+    id 'maven-publish'
+    alias(libs.plugins.spotless)
+}
+
+description = 'koryki measures - named aggregates of the tables of a koryki catalog, kept beside the catalog and not in it'
+
+java {
+    // A fixed toolchain, so the class-file version does not depend on who builds (IDE or command line).
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+    withJavadocJar()
+}
+
+base.archivesName = 'koryki-measures'
+
+dependencies {
+    api libs.koryki.core
+    // The measure catalog is a JSON file.
+    implementation libs.jackson.databind
+
+    testImplementation platform(libs.junit.bom)
+    testImplementation libs.junit.jupiter
+    testRuntimeOnly libs.junit.platform.launcher
+}
+
+tasks.withType(Javadoc).configureEach {
+    options.addStringOption('Xdoclint:-missing', '-quiet')
+}
+
+// AOSP variant (4-space indent), as in koryki-java/core.
+spotless {
+    java {
+        target 'src/**/*.java'
+        googleJavaFormat(libs.versions.google.java.format.get()).aosp()
+    }
+}
+
+// LICENSE and NOTICE travel with every jar, sources and javadoc included: whoever receives an
+// artifact also receives the terms it is passed on under.
+tasks.withType(Jar).configureEach {
+    from('LICENSE') { into 'META-INF' }
+    from('NOTICE') { into 'META-INF' }
+}
+
+tasks.named('jar') {
+    manifest {
+        attributes('Automatic-Module-Name': 'ai.koryki.measures')
+    }
+}
+
+test {
+    useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            artifactId = 'koryki-measures'
+            pom {
+                name = 'koryki-measures'
+                description = project.description
+                url = 'https://github.com/koryki-java/measures'
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'j0hannesz'
+                        name = 'Johannes Zemlin'
+                        email = 'johannes.zemlin@mailbox.org'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/koryki-java/measures.git'
+                    developerConnection = 'scm:git:git@github.com:koryki-java/measures.git'
+                    url = 'https://github.com/koryki-java/measures'
+                }
+            }
+        }
+    }
+}
