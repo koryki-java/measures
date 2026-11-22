@@ -61,6 +61,8 @@ import org.antlr.v4.runtime.tree.ParseTree;
  */
 public final class AggRewriter {
 
+    private static final System.Logger LOG = System.getLogger(AggRewriter.class.getName());
+
     private static final Pattern AGG = Pattern.compile("(?<![a-z0-9])agg\\s*\\(");
 
     /** The names of the blocks the rewriter generates, with the prefix of a later select. */
@@ -103,7 +105,12 @@ public final class AggRewriter {
             return ctx;
         } catch (Refusal r) {
             throw r;
-        } catch (Exception e) {
+        } catch (java.io.IOException e) {
+            // reading from a string: not a fault of the query
+            throw new java.io.UncheckedIOException(e);
+        } catch (ai.koryki.antlr.KorykiaiException e) {
+            // what the reader throws for a query it cannot read; anything else is a bug and is
+            // not dressed up as a syntax error
             Refusal r = new Refusal("syntax error: " + firstLine(e.getMessage()));
             if (e instanceof ai.koryki.antlr.PositionException pe) {
                 r.panic(pe.getLine(), pe.getPos());
@@ -132,18 +139,24 @@ public final class AggRewriter {
             Rewritten r = new Driver(data).run();
             return new Rewritten(
                     r.kql() + "\n" + kql.substring(cut),
-                    r.measures(),
-                    r.derived(),
+                    r.columns(),
                     r.violations(),
                     r.map().withTail(kql, cut, "\n"),
-                    r.problems(),
-                    r.shown());
+                    r.problems());
         } catch (Refusal r) {
             if (!r.located()) {
                 r.from = 0;
                 r.to = Math.max(0, kql.length() - 1);
             }
             return Rewritten.refused(r.getMessage(), SourceMap.range(kql, r.from, r.to));
+        } catch (RuntimeException e) {
+            // A bug of the rewriter, not a fault of the query. Reported as a refusal of the whole
+            // query, so that the caller answers with a message and not with an exception, and
+            // logged, so that it does not stay unseen.
+            LOG.log(System.Logger.Level.ERROR, "agg() rewriter failed on: " + kql, e);
+            return Rewritten.refused(
+                    "internal error in the rewriter of agg(): " + e,
+                    SourceMap.range(kql, 0, Math.max(0, kql.length() - 1)));
         }
     }
 
@@ -298,9 +311,7 @@ public final class AggRewriter {
         private final Map<String, String> entityOfAlias = new LinkedHashMap<>();
         private final Map<String, Layer> layers = new LinkedHashMap<>();
         private final Map<String, Use> uses = new LinkedHashMap<>();
-        private final Map<String, String> provenance = new LinkedHashMap<>();
-        private final Map<String, List<String>> derived = new LinkedHashMap<>();
-        private final Map<String, String> shown = new LinkedHashMap<>();
+        private final Map<String, OutputColumn> columns = new LinkedHashMap<>();
         // An optional link (+) in the source graph: a layer then holds NULL-padded rows.
         private boolean outer;
         // FETCH ROLLUP: one evaluation per grouping set, the keys dropped from the right.
@@ -420,13 +431,7 @@ public final class AggRewriter {
             focus = select;
             prepare();
             return new Rewritten(
-                    build(items, keyOf, keys, rows, having),
-                    provenance,
-                    derived,
-                    List.of(),
-                    null,
-                    List.of(),
-                    shown);
+                    build(items, keyOf, keys, rows, having), columns, List.of(), null, List.of());
         }
 
         // ----- the input -----
@@ -962,19 +967,20 @@ public final class AggRewriter {
                         && e.getChildCount() == 1) {
                     header = measureOf(calls.get(0)).getName();
                 }
-                if (calls.size() == 1 && e.function() == calls.get(0) && e.getChildCount() == 1) {
-                    provenance.put(
-                            header,
-                            tableOf(calls.get(0)) + "." + measureOf(calls.get(0)).getName());
-                } else if (header != null && !calls.isEmpty()) {
-                    // computed from measures: round(agg(..), 2), a ratio of two
-                    derived.put(
-                            header,
+                if (header != null && !calls.isEmpty()) {
+                    List<String> read =
                             calls.stream()
                                     .map(c -> tableOf(c) + "." + measureOf(c).getName())
                                     .distinct()
-                                    .toList());
-                    shown.put(header, shownText(e, calls));
+                                    .toList();
+                    // exactly one measure, or computed from measures: round(agg(..), 2), a ratio
+                    columns.put(
+                            header,
+                            calls.size() == 1
+                                            && e.function() == calls.get(0)
+                                            && e.getChildCount() == 1
+                                    ? OutputColumn.measure(read.get(0))
+                                    : new OutputColumn(read, shownText(e, calls)));
                 }
             }
             if (header != null) {
@@ -1058,9 +1064,7 @@ public final class AggRewriter {
     private final class Driver {
         private final List<Mapped> parts = new ArrayList<>(); // the WITH blocks, as text
         private Mapped main;
-        private final Map<String, String> provenance = new LinkedHashMap<>();
-        private final Map<String, List<String>> derived = new LinkedHashMap<>();
-        private final Map<String, String> shown = new LinkedHashMap<>();
+        private final Map<String, OutputColumn> columns = new LinkedHashMap<>();
         private final String original;
 
         Driver(String original) {
@@ -1104,12 +1108,10 @@ public final class AggRewriter {
                 if (marked.isEmpty()) {
                     return new Rewritten(
                             full,
-                            provenance,
-                            derived,
+                            columns,
                             List.of(),
                             SourceMap.of(original, fullMapped),
-                            List.of(),
-                            shown);
+                            List.of());
                 }
                 KQLParser.SelectContext s = innermost(marked);
                 Run run =
@@ -1140,9 +1142,7 @@ public final class AggRewriter {
                 } else {
                     main = replaced;
                     if (!hasSelectAbove(s)) {
-                        r.measures().forEach(provenance::putIfAbsent);
-                        r.derived().forEach(derived::putIfAbsent);
-                        r.shown().forEach(shown::putIfAbsent);
+                        r.columns().forEach(columns::putIfAbsent);
                     }
                 }
                 parts.addAll(part, run.blocks.stream().map(run::decode).toList());

@@ -98,8 +98,10 @@ Rewritten r = rewriter.rewrite(
     "FIND customers c, c VIA same_customer orders o, o VIA same_order order_details od "
         + "FETCH c.country, agg(o.total_freight) freight, agg(od.units) units");
 r.kql();        // plain KQL: run it with any koryki engine, on any dialect
-r.measures();   // {freight=orders.total_freight, units=order_details.units}
-r.derived();    // columns computed from measures: {per_order=[orders.total_freight, orders.order_count]}
+r.columns();    // the output columns that read measures, by header:
+                // {freight=OutputColumn[measures=[orders.total_freight], shown=null],
+                //  per_order=OutputColumn[measures=[orders.total_freight, orders.order_count],
+                //                         shown={orders.total_freight} / {orders.order_count}]}
 r.violations(); // why a query was refused (then kql() is null)
 r.map();        // SourceMap: carries a Range of the rewritten kql() back to the query the user wrote
 ```

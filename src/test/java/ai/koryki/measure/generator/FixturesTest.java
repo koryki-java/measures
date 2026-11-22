@@ -104,14 +104,18 @@ public abstract class FixturesTest {
         golden(r.kql(), rewritten);
         golden(
                 Stream.concat(
-                                r.measures().entrySet().stream()
-                                        .map(e -> e.getKey() + " : " + e.getValue()),
-                                r.derived().entrySet().stream()
+                                r.columns().entrySet().stream()
+                                        .filter(e -> e.getValue().isMeasure())
+                                        .map(e -> e.getKey() + " : " + e.getValue().measure()),
+                                r.columns().entrySet().stream()
+                                        .filter(e -> !e.getValue().isMeasure())
                                         .map(
                                                 e ->
                                                         e.getKey()
                                                                 + " ~ "
-                                                                + String.join(", ", e.getValue())))
+                                                                + String.join(
+                                                                        ", ",
+                                                                        e.getValue().measures())))
                         .collect(Collectors.joining("\n")),
                 kindDir("provenance", name, ".txt"));
 

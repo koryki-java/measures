@@ -15,12 +15,15 @@ import ai.koryki.duckdb.SqlQueryRenderer;
 import ai.koryki.kql.Engine;
 import ai.koryki.kql.EngineBuilder;
 import ai.koryki.kql.HeaderInfo;
+import ai.koryki.measure.catalog.Measure;
+import ai.koryki.measure.catalog.MeasureCatalog;
 import ai.koryki.measure.generator.AggRewriter;
 import ai.koryki.measure.generator.FixturesTest;
 import ai.koryki.measure.generator.MeasureQueryRewriter;
 import ai.koryki.measure.generator.Rewritten;
 import java.io.IOException;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Locale;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -216,10 +219,15 @@ class AggRewriterFixturesTest extends FixturesTest {
                         HEAD
                                 + "FETCH c.country, round(agg(o.total_freight), 2) f,"
                                 + " agg(o.total_freight) / agg(o.order_count) per_order");
-        assertEquals("round({orders.total_freight}, 2)", r.shown().get("f"));
-        assertEquals("{orders.total_freight} / {orders.order_count}", r.shown().get("per_order"));
+        assertEquals("round({orders.total_freight}, 2)", r.columns().get("f").shown());
+        assertEquals(
+                "{orders.total_freight} / {orders.order_count}",
+                r.columns().get("per_order").shown());
         // a column that is exactly one measure is in measures(), not here
-        assertEquals(2, r.shown().size());
+        assertEquals(2, r.columns().size());
+        assertEquals(
+                List.of("orders.total_freight", "orders.order_count"),
+                r.columns().get("per_order").measures());
     }
 
     @Test
@@ -259,5 +267,33 @@ class AggRewriterFixturesTest extends FixturesTest {
                                 + "FETCH c.country, agg(o.total_freight) f");
         assertEquals(1, r.violations().size());
         assertTrue(r.violations().get(0).contains("U+E002"), r.violations().toString());
+    }
+
+    @Test
+    void aColumnThatIsExactlyOneMeasureSaysSo() {
+        Rewritten r = rewriter.rewrite(HEAD + "FETCH c.country, agg(o.total_freight) f");
+        assertTrue(r.columns().get("f").isMeasure());
+        assertEquals("orders.total_freight", r.columns().get("f").measure());
+        // a key is not a column of measures
+        assertEquals(1, r.columns().size());
+    }
+
+    @Test
+    void aBugOfTheRewriterIsAnAnswerNotAnException() {
+        MeasureCatalog broken =
+                new MeasureCatalog() {
+                    @Override
+                    public java.util.Optional<Measure> find(String table, String name) {
+                        throw new IllegalStateException("boom");
+                    }
+                };
+        Rewritten r =
+                new AggRewriter(
+                                CatalogLoader.db(NorthwindService.DB),
+                                CatalogLoader.model(NorthwindService.MODEL, Locale.ENGLISH),
+                                broken)
+                        .rewrite(HEAD + "FETCH c.country, agg(o.total_freight) f");
+        assertEquals(1, r.violations().size());
+        assertTrue(r.violations().get(0).contains("internal error"), r.violations().toString());
     }
 }
