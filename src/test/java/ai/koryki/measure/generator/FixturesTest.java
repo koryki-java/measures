@@ -145,14 +145,23 @@ public abstract class FixturesTest {
      * fan out) or must keep them (it can).
      */
     protected final void assertPlainOrLayered(String kql, boolean plain) {
-        Rewritten r = rewriter().rewrite(kql);
+        assertPlainOrLayered(rewriter(), kql, plain);
+    }
+
+    /** The same, with a rewriter over another catalog than the corpus's own. */
+    protected final void assertPlainOrLayered(AggRewriter rewriter, String kql, boolean plain) {
+        Rewritten r = rewriter.rewrite(kql);
         assertTrue(r.ok(), () -> kql + " was refused: " + r.violations());
         assertEquals(plain, !r.kql().contains("aggd"), kql + "\n" + r.kql());
-        sameRowsAsLayers("inline", kql, r.kql());
+        sameRowsAsLayers(rewriter, "inline", kql, r.kql());
     }
 
     private void sameRowsAsLayers(String name, String kql, String shortcut) {
-        Rewritten general = rewriter().layered().rewrite(kql);
+        sameRowsAsLayers(rewriter(), name, kql, shortcut);
+    }
+
+    private void sameRowsAsLayers(AggRewriter rewriter, String name, String kql, String shortcut) {
+        Rewritten general = rewriter.layered().rewrite(kql);
         assertTrue(general.ok(), name);
         if (general.kql().equals(shortcut)) {
             return; // no shortcut was taken

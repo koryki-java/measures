@@ -157,14 +157,14 @@ correct; the plain form is an optimisation, never a different meaning):
 - one table alias has measures, no `ROLLUP`;
 - every link is an inner link written without a column list (`VIA name` or the default);
 - walking the links away from the measure's alias, each one leads to one row of the other table:
-  the columns compared on the far side are its whole primary key, in every relation between the two
+  the columns compared on the far side are a key of it (its primary key, or a unique index over all rows, see `Tables.isKey`), in every relation between the two
   tables (the link a query means is not decided here, so all of them must say so), none of them a
   range join. A self-join, an alias that is not an entity, and a table without a primary key are
   never plain.
 
 `AggRewriter.layered()` returns a rewriter that never takes the shortcut. `FixturesTest` runs every
 query of the corpus both ways on the database and requires the same rows, so a wrong decision fails a
-test. Unique indexes are not used yet (only the primary key), and outer links and several measure
+test. A unique index counts only if the catalog has it (the loaders of core and ingest read the enforced ones); a catalog that says nothing counts as no key. Outer links and several measure
 tables always keep the layers.
 
 ## Outer links

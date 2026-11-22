@@ -1,5 +1,6 @@
 package ai.koryki.measure.generator;
 
+import ai.koryki.catalog.Tables;
 import ai.koryki.catalog.domain.Attribute;
 import ai.koryki.catalog.domain.Entity;
 import ai.koryki.catalog.domain.Model;
@@ -818,14 +819,6 @@ public final class AggRewriter {
             if (target == null) {
                 return false;
             }
-            List<String> pk =
-                    target.getColumns().stream()
-                            .filter(c -> c.getPkPos() > 0)
-                            .map(c -> c.getName().toLowerCase())
-                            .toList();
-            if (pk.isEmpty()) {
-                return false;
-            }
             boolean found = false;
             for (var r : schema.getRelations()) {
                 boolean ab =
@@ -843,21 +836,14 @@ public final class AggRewriter {
                 }
                 // the columns on the far side must be the whole primary key; a symmetric relation
                 // can be read both ways, so both sides must be
-                if (ab && !covers(r.getEndColumns(), pk)) {
+                if (ab && !Tables.isKey(target, r.getEndColumns())) {
                     return false;
                 }
-                if ((ba || r.isSymmetric()) && !covers(r.getStartColumns(), pk)) {
+                if ((ba || r.isSymmetric()) && !Tables.isKey(target, r.getStartColumns())) {
                     return false;
                 }
             }
             return found;
-        }
-
-        private boolean covers(List<String> columns, List<String> pk) {
-            return columns.stream()
-                    .map(String::toLowerCase)
-                    .collect(java.util.stream.Collectors.toSet())
-                    .containsAll(pk);
         }
 
         private String nullOf(Layer layer, Use u, KQLParser.ExpressionContext e) {
