@@ -285,7 +285,8 @@ public final class AggRewriter {
             List<KQLParser.SourceContext> all = new ArrayList<>();
             all.add(select.source());
             for (var link : select.link()) {
-                if (link.PLUS() != null) {
+                // + (LEFT) and FULL pad the missing side with NULLs; CROSS pads nothing
+                if (link.kind != null && link.kind.getType() != KQLParser.CROSS) {
                     outer = true;
                 }
                 all.add(link.source());

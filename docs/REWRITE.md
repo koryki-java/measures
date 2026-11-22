@@ -141,13 +141,15 @@ The spike test was a copy of each module's Northwind engine test; it is not kept
 
 ## Outer links
 
-An optional link (`+`) is copied into every layer with the rest of the graph. A layer then holds a NULL-padded
+An optional link (`+`, and `FULL`) is copied into every layer with the rest of the graph. A layer then holds a NULL-padded
 row (its identity is NULL) for each row that found no partner. It adds nothing to a measure: `sum`, `avg` and
 `count(x)` skip NULLs, and `count()` is written `count(x.i1)`, the count of the identity. A group whose rows are
 all padded stays, with 0 for a count and NULL for the other measures (Ossie b17). Only when the query has a `+`
 is `count()` rewritten, so the plain output does not change. Verified on DuckDB (the Northwind `outer_link` and the
 SCOTT cases b10, b11, b15, b17 against Ossie's rows) and on PostgreSQL, MariaDB, Oracle, Trino, SQLite and SQL
-Server for `outer_link`. A RIGHT join is a LEFT join with the sides swapped; a filter in the ON clause is not
+Server for `outer_link`. A FULL join pads both sides, so both are handled like `+` (Ossie b12); a CROSS
+join pads nothing and needs no handling (b13). A range or other conditioned relationship of the catalog is
+rewritten as any link (b06, b07): the layers copy the join. A RIGHT join is a LEFT join with the sides swapped; a filter in the ON clause is not
 expressible in KQL.
 
 ## ROLLUP
