@@ -85,6 +85,14 @@ Supported: one `FIND` with inner links, group keys, `agg` in `FETCH` (also insid
 expressions) and in `AND` conjuncts of `FILTER` (they become `HAVING`), sort and limit. Everything
 else is refused with a reason, never guessed at; see [REWRITE.md](docs/REWRITE.md).
 
+## Tests
+
+File-based, against the shared fixture corpora of the repositories that own the catalogs (`measures.json` and the
+queries live there, the goldens too): `koryki-java/northwind` (`./gradlew test`) and `koryki-java/tpcds`
+(`./gradlew tpcdsTest`, the measures of Apache Ossie's TPC-DS model). `./gradlew check` runs both; `-Dfixtures.write=true`
+writes missing goldens. A checkout is found as `-Dtest.root` / `-Dtpcds.root`, a Gradle property of the same name, or
+the sibling directory. The catalog snapshots come from `mavenLocal` first (`publishToMavenLocal` in those repositories).
+
 ## Build
 
 ```bash

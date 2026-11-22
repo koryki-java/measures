@@ -30,6 +30,9 @@ dependencies {
     // measures.json, the measures of the Northwind catalog. mavenLocal comes first (settings.gradle), so
     // a snapshot built in koryki-java/northwind is found; a release comes from Central.
     testImplementation libs.koryki.northwind.catalog
+    // The TPC-DS catalog (with its measures.json) and database, for the tpcds corpus. Same resolution.
+    testImplementation libs.koryki.tpcds.catalog
+    testImplementation libs.koryki.tpcds.duckdb
     testImplementation platform(libs.junit.bom)
     testImplementation libs.junit.jupiter
     testRuntimeOnly libs.junit.platform.launcher
@@ -60,29 +63,47 @@ tasks.named('jar') {
     }
 }
 
-test {
-    useJUnitPlatform()
-
-    // The fixture corpus is read from a checkout of koryki-java/northwind, as in koryki-java/core:
-    //   ./gradlew test -Dtest.root=/path/to/northwind     (or 'test.root' in gradle.properties)
-    // and, failing both, the sibling checkout ../northwind. A golden is written only on request:
-    //   ./gradlew test -Dfixtures.write=true
-    systemProperty 'fixtures.write', System.getProperty('fixtures.write', 'false')
-    def testRoot = System.getProperty('test.root')
-            ?: providers.gradleProperty('test.root').orNull
-            ?: (file('../northwind').isDirectory() ? file('../northwind').absolutePath : null)
-    def corpus = 'fixture/src/main/resources/ai/koryki/fixture'
-    if (testRoot != null) {
-        systemProperty 'test.root', testRoot
-        systemProperty 'test.corpus', corpus
+// The fixture corpora are read from checkouts of the repositories that own the catalogs, as in
+// koryki-java/core: the test.root of a run is the root of one of them. Two corpora, two tasks:
+//   ./gradlew test        koryki-java/northwind  (-Dtest.root=..., 'test.root' in gradle.properties, or ../northwind)
+//   ./gradlew tpcdsTest   koryki-java/tpcds      (-Dtpcds.root=..., 'tpcds.root' in gradle.properties, or ../tpcds)
+// A golden is written only on request: ./gradlew test tpcdsTest -Dfixtures.write=true
+def corpus = 'fixture/src/main/resources/ai/koryki/fixture'
+def fixtureRoot = { String property, String sibling ->
+    System.getProperty(property)
+            ?: providers.gradleProperty(property).orNull
+            ?: (file(sibling).isDirectory() ? file(sibling).absolutePath : null)
+}
+def withCorpus = { Test task, String root ->
+    task.useJUnitPlatform()
+    task.systemProperty 'fixtures.write', System.getProperty('fixtures.write', 'false')
+    if (root != null) {
+        task.systemProperty 'test.root', root
+        task.systemProperty 'test.corpus', corpus
         // Without this a changed fixture would leave the test UP-TO-DATE.
-        inputs.dir(file(testRoot).toPath().resolve(corpus).toFile())
+        task.inputs.dir(file(root).toPath().resolve(corpus).toFile())
                 .withPropertyName('corpus')
                 .withPathSensitivity(PathSensitivity.RELATIVE)
                 .optional()
     }
-    testLogging { exceptionFormat 'full' }
+    task.testLogging { exceptionFormat 'full' }
 }
+
+test {
+    exclude '**/tpcds/**'
+    withCorpus(it, fixtureRoot('test.root', '../northwind'))
+}
+
+tasks.register('tpcdsTest', Test) {
+    description = 'The rewriter against the TPC-DS measures corpus (koryki-java/tpcds).'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    include '**/tpcds/**'
+    withCorpus(it, fixtureRoot('tpcds.root', '../tpcds'))
+}
+
+tasks.named('check') { dependsOn 'tpcdsTest' }
 
 publishing {
     publications {
