@@ -7,7 +7,7 @@ spotless = "8.11.0"
 google-java-format = "1.36.1"
 
 # One version per koryki repository this project builds against.
-koryki-core = "0.4.2"
+koryki-core = "0.4.3-SNAPSHOT"
 # The northwind repository: the catalog (with its measures.json) and the shared fixture corpus.
 koryki-northwind-catalog-version = "0.4.2-SNAPSHOT"
 # The tpcds repository: the catalog (with its measures.json) and the DuckDB database.
