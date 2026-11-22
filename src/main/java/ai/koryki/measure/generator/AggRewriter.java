@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.misc.Interval;
@@ -61,6 +62,11 @@ import org.antlr.v4.runtime.tree.ParseTree;
 public final class AggRewriter {
 
     private static final Pattern AGG = Pattern.compile("(?<![a-z0-9])agg\\s*\\(");
+
+    /** The names of the blocks the rewriter generates, with the prefix of a later select. */
+    private static final Pattern GENERATED =
+            Pattern.compile(
+                    "(?<![A-Za-z0-9_])(?:q[0-9]+)?agg(?:[dm][0-9]+(?:s[0-9]+)?|u|r)(?![A-Za-z0-9_])");
 
     private final Model model;
     private final Schema schema;
@@ -113,6 +119,7 @@ public final class AggRewriter {
             return Rewritten.unchanged(kql);
         }
         try {
+            reservedCharacters(kql);
             int cut = visualizeStart(kql);
             if (cut < 0) {
                 return new Driver(kql).run();
@@ -137,6 +144,27 @@ public final class AggRewriter {
                 r.to = Math.max(0, kql.length() - 1);
             }
             return Rewritten.refused(r.getMessage(), SourceMap.range(kql, r.from, r.to));
+        }
+    }
+
+    /**
+     * The rewriter marks the text it carries over with three private-use characters; a query that
+     * holds one itself (in a string, say) would be taken apart at the wrong place. Refused.
+     */
+    private static void reservedCharacters(String kql) {
+        for (int i = 0; i < kql.length(); i++) {
+            char c = kql.charAt(i);
+            if (c >= '\uE000' && c <= '\uE002') {
+                Refusal r =
+                        new Refusal(
+                                String.format(
+                                        "the query contains the character U+%04X, which agg()"
+                                                + " reserves for itself",
+                                        (int) c));
+                r.from = i;
+                r.to = i;
+                throw r;
+            }
         }
     }
 
@@ -353,6 +381,7 @@ public final class AggRewriter {
                 var e = item.expression();
                 if (!aggCalls(e).isEmpty()) {
                     any = true;
+                    noRawAggregate(e);
                     noFieldsOutsideAgg(e, "a FETCH item that reads a measure also reads a column");
                     for (var call : aggCalls(e)) {
                         use(call);
@@ -371,6 +400,7 @@ public final class AggRewriter {
             }
             for (var h : having) {
                 focus = h;
+                noRawAggregate(h);
                 noFieldsOutsideAgg(h, "a predicate on a measure also reads a column");
                 for (var call : aggCalls(h)) {
                     use(call);
@@ -427,10 +457,27 @@ public final class AggRewriter {
             return out;
         }
 
+        /** An aggregate other than agg(), not a window function: sum(x), count(). */
         private boolean rawAggregate(ParseTree root) {
             List<KQLParser.FunctionContext> all = new ArrayList<>();
             collect(root, KQLParser.FunctionContext.class, all);
-            return all.stream().anyMatch(f -> isAggregate(f.func.getText()) && f.window() == null);
+            return all.stream()
+                    .anyMatch(
+                            f ->
+                                    !"agg".equals(f.func.getText())
+                                            && isAggregate(f.func.getText())
+                                            && f.window() == null);
+        }
+
+        /**
+         * Next to agg() a plain aggregate would be evaluated over the rows of the rewriter's own
+         * blocks, not over the rows of the query: refused, whether it reads a column or not.
+         */
+        private void noRawAggregate(ParserRuleContext root) {
+            if (rawAggregate(root)) {
+                throw new Refusal(
+                        "a plain aggregate next to agg() is not supported: '" + text(root) + "'");
+            }
         }
 
         private void noFieldsOutsideAgg(ParseTree root, String message) {
@@ -1039,6 +1086,7 @@ public final class AggRewriter {
                 }
                 throw r;
             }
+            reservedNames(original);
             if (q.WITH() != null) {
                 for (var block : q.block()) {
                     parts.add(Mapped.identity(text(block), block.start.getStartIndex()));
@@ -1098,6 +1146,24 @@ public final class AggRewriter {
                     }
                 }
                 parts.addAll(part, run.blocks.stream().map(run::decode).toList());
+            }
+        }
+
+        /**
+         * The blocks the rewriter makes are named aggd1, aggm1, aggu, aggr (and q2aggd1 ... for
+         * further selects): a query that uses such a name itself would clash with them.
+         */
+        private void reservedNames(String text) {
+            Matcher m = GENERATED.matcher(text);
+            if (m.find()) {
+                Refusal r =
+                        new Refusal(
+                                "the name '"
+                                        + m.group()
+                                        + "' is reserved for the blocks that agg() generates");
+                r.from = m.start();
+                r.to = m.end() - 1;
+                throw r;
             }
         }
 

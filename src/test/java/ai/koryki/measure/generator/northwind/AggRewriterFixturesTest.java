@@ -1,6 +1,7 @@
 package ai.koryki.measure.generator.northwind;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.koryki.antlr.Range;
 import ai.koryki.catalog.CatalogLoader;
@@ -219,5 +220,44 @@ class AggRewriterFixturesTest extends FixturesTest {
         assertEquals("{orders.total_freight} / {orders.order_count}", r.shown().get("per_order"));
         // a column that is exactly one measure is in measures(), not here
         assertEquals(2, r.shown().size());
+    }
+
+    @Test
+    void aPlainAggregateNextToAMeasureIsRefused() {
+        // count() would count the rows of the rewriter's own block, not the orders
+        Rewritten r = rewriter.rewrite(HEAD + "FETCH c.country, agg(o.total_freight) + count() x");
+        assertEquals(1, r.violations().size());
+        assertTrue(r.violations().get(0).contains("plain aggregate"), r.violations().toString());
+        // and in a predicate on a measure
+        r =
+                rewriter.rewrite(
+                        HEAD
+                                + "FILTER agg(o.total_freight) > count()\n"
+                                + "FETCH c.country, agg(o.order_count) n");
+        assertEquals(1, r.violations().size());
+    }
+
+    @Test
+    void aNameTheRewriterGeneratesIsReserved() {
+        String q =
+                "WITH aggd1 AS (FIND customers c FETCH c.country country)\n"
+                        + "FIND customers c, c VIA same_customer orders o\n"
+                        + "FETCH c.country, agg(o.total_freight) f";
+        Rewritten r = rewriter.rewrite(q);
+        assertEquals(1, r.violations().size());
+        assertTrue(r.violations().get(0).contains("aggd1"), r.violations().toString());
+        // at the name the user wrote
+        assertEquals(new Range(1, 6, 1, 11), r.problems().get(0).range());
+    }
+
+    @Test
+    void aCharacterTheMarkersUseIsRefusedNotThrown() {
+        Rewritten r =
+                rewriter.rewrite(
+                        HEAD
+                                + "FILTER c.country = 'a\uE002b'\n"
+                                + "FETCH c.country, agg(o.total_freight) f");
+        assertEquals(1, r.violations().size());
+        assertTrue(r.violations().get(0).contains("U+E002"), r.violations().toString());
     }
 }
