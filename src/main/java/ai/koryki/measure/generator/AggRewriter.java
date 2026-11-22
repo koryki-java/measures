@@ -8,6 +8,10 @@ import ai.koryki.catalog.schema.Concept;
 import ai.koryki.catalog.schema.Schema;
 import ai.koryki.catalog.schema.Table;
 import ai.koryki.catalog.types.ConceptResolver;
+import ai.koryki.iql.functions.FunctionCatalog;
+import ai.koryki.iql.functions.FunctionDefinition;
+import ai.koryki.iql.functions.FunctionKind;
+import ai.koryki.iql.functions.StandardFunctions;
 import ai.koryki.kql.KQLParser;
 import ai.koryki.kql.KQLReader;
 import ai.koryki.measure.catalog.Measure;
@@ -18,7 +22,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.regex.Pattern;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.misc.Interval;
@@ -52,27 +55,24 @@ public final class AggRewriter {
 
     private static final Pattern AGG = Pattern.compile("(?<![a-z0-9])agg\\s*\\(");
 
-    /** Functions that collapse rows. A raw one next to {@code agg} is refused. */
-    private static final Set<String> AGGREGATES =
-            Set.of(
-                    "count",
-                    "sum",
-                    "avg",
-                    "min",
-                    "max",
-                    "median",
-                    "stddev",
-                    "variance",
-                    "string_agg",
-                    "array_agg",
-                    "any_value");
-
     private final Model model;
     private final Schema schema;
     private final MeasureCatalog measures;
     private final ConceptResolver concepts;
+    private final FunctionCatalog functions;
 
+    /** With koryki's standard function catalog: what is an aggregate is decided there. */
     public AggRewriter(Schema schema, Model model, MeasureCatalog measures) {
+        this(schema, model, measures, StandardFunctions.canonical());
+    }
+
+    /**
+     * @param functions the function catalog that says which functions are aggregates; pass the one
+     *     of the dialect in use if it differs from the standard one
+     */
+    public AggRewriter(
+            Schema schema, Model model, MeasureCatalog measures, FunctionCatalog functions) {
+        this.functions = functions;
         this.schema = schema;
         this.model = model;
         this.measures = measures;
@@ -88,6 +88,19 @@ public final class AggRewriter {
         } catch (Refusal r) {
             return Rewritten.refused(r.getMessage());
         }
+    }
+
+    /**
+     * Whether the catalog knows the function as an aggregate (kind AGGREGATE, not a window
+     * function).
+     */
+    private boolean isAggregate(String name) {
+        for (FunctionDefinition d : functions.overloads(name)) {
+            if (d.getKind() == FunctionKind.AGGREGATE) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static final class Refusal extends RuntimeException {
@@ -272,8 +285,7 @@ public final class AggRewriter {
         private boolean rawAggregate(ParseTree root) {
             List<KQLParser.FunctionContext> all = new ArrayList<>();
             collect(root, KQLParser.FunctionContext.class, all);
-            return all.stream()
-                    .anyMatch(f -> AGGREGATES.contains(f.func.getText()) && f.window() == null);
+            return all.stream().anyMatch(f -> isAggregate(f.func.getText()) && f.window() == null);
         }
 
         private void noFieldsOutsideAgg(ParseTree root, String message) {
@@ -307,7 +319,7 @@ public final class AggRewriter {
                 }
                 if (p instanceof KQLParser.FunctionContext f
                         && !"agg".equals(f.func.getText())
-                        && AGGREGATES.contains(f.func.getText())) {
+                        && isAggregate(f.func.getText())) {
                     throw new Refusal("agg() inside the aggregate " + f.func.getText() + "()");
                 }
             }
@@ -432,7 +444,7 @@ public final class AggRewriter {
             }
             List<KQLParser.FunctionContext> fns = new ArrayList<>();
             collect(e, KQLParser.FunctionContext.class, fns);
-            if (fns.stream().noneMatch(f -> AGGREGATES.contains(f.func.getText()))) {
+            if (fns.stream().noneMatch(f -> isAggregate(f.func.getText()))) {
                 throw new Refusal(where + "the expression has no aggregate function");
             }
             return e;
