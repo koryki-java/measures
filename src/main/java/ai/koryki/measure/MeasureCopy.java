@@ -14,9 +14,11 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package ai.koryki.measure.catalog;
+package ai.koryki.measure;
 
 import ai.koryki.catalog.SchemaCopy;
+import ai.koryki.measure.catalog.Measure;
+import ai.koryki.measure.catalog.MeasureCatalog;
 
 /** Copies of the measure classes, kept off the classes as core keeps its own. */
 public final class MeasureCopy {
@@ -26,7 +28,9 @@ public final class MeasureCopy {
     public static MeasureCatalog deepCopy(MeasureCatalog catalog) {
         MeasureCatalog copy = new MeasureCatalog();
         catalog.getTables()
-                .forEach((table, measures) -> measures.forEach(m -> copy.add(table, deepCopy(m))));
+                .forEach(
+                        (table, measures) ->
+                                measures.forEach(m -> Measures.add(copy, table, deepCopy(m))));
         return copy;
     }
 

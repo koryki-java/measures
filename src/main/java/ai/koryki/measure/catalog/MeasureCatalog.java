@@ -16,11 +16,9 @@
  */
 package ai.koryki.measure.catalog;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 /**
  * The measures of a catalog, by the name of the table they belong to. Kept beside the catalog
@@ -33,8 +31,8 @@ import java.util.Optional;
  * { "tables": { "orders": [ { "name": "revenue", "expression": "sum(amount)" } ] } }
  * </pre>
  *
- * <p>Plain data. Whether it fits a schema is {@link MeasureCheck}'s question; {@link
- * MeasureCatalogLoader} asks it when it reads.
+ * <p>Plain data, like the classes of {@code ai.koryki.catalog.schema}: no logic. Reading, writing,
+ * copying, checking against a schema and looking measures up are in {@code ai.koryki.measure}.
  */
 public class MeasureCatalog {
 
@@ -45,25 +43,6 @@ public class MeasureCatalog {
     }
 
     public void setTables(Map<String, List<Measure>> tables) {
-        this.tables = tables == null ? new LinkedHashMap<>() : new LinkedHashMap<>(tables);
-    }
-
-    /** The measures of the table, in order; empty when it has none. */
-    public List<Measure> measuresOf(String table) {
-        List<Measure> found = tables.get(table);
-        return found == null ? List.of() : List.copyOf(found);
-    }
-
-    public Optional<Measure> find(String table, String name) {
-        return measuresOf(table).stream().filter(m -> name.equals(m.getName())).findFirst();
-    }
-
-    public MeasureCatalog add(String table, Measure measure) {
-        tables.computeIfAbsent(table, k -> new ArrayList<>()).add(measure);
-        return this;
-    }
-
-    public boolean isEmpty() {
-        return tables.values().stream().allMatch(List::isEmpty);
+        this.tables = tables;
     }
 }

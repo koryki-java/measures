@@ -12,7 +12,8 @@ How a measure is evaluated is not part of this project's model class; see the [p
 
 | Package | Part |
 |---|---|
-| `ai.koryki.measure.catalog` | The measure definitions: `Measure`, the sidecar file, loading and checking against a catalog |
+| `ai.koryki.measure.catalog` | The measure data classes, and nothing else: `Measure`, `MeasureCatalog` (getters and setters, no logic, as core's `catalog.schema`) |
+| `ai.koryki.measure` | What is done with them, as core's `catalog` does with its classes: `MeasureCatalogLoader` (read, write), `MeasureCheck` (against a schema), `MeasureCopy`, `Measures` (look up, add) |
 | `ai.koryki.measure.generator` | `AggRewriter`: KQL with `agg(alias.measure)` in, plain KQL out, with the columns' provenance. The pattern and its limits are in [REWRITE.md](docs/REWRITE.md) |
 
 ## Why beside the catalog, not in it
@@ -61,7 +62,7 @@ that, at read, naming the table.
 ```java
 Schema schema = CatalogLoader.db("/my/catalog");
 MeasureCatalog measures = MeasureCatalogLoader.read(in, schema); // refused if it does not fit
-Measure revenue = measures.find("orders", "revenue").orElseThrow();
+Measure revenue = Measures.find(measures, "orders", "revenue").orElseThrow();
 ```
 
 `MeasureCheck` refuses a table the schema lacks, a measure without a name or expression, a name used

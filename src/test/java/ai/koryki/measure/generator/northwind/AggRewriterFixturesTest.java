@@ -324,7 +324,7 @@ class AggRewriterFixturesTest extends FixturesTest {
         MeasureCatalog broken =
                 new MeasureCatalog() {
                     @Override
-                    public java.util.Optional<Measure> find(String table, String name) {
+                    public java.util.Map<String, java.util.List<Measure>> getTables() {
                         throw new IllegalStateException("boom");
                     }
                 };

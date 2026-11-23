@@ -14,13 +14,15 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package ai.koryki.measure.catalog;
+package ai.koryki.measure;
 
 import ai.koryki.catalog.schema.Column;
 import ai.koryki.catalog.schema.Schema;
 import ai.koryki.catalog.schema.Table;
 import ai.koryki.catalog.types.ConceptResolver;
 import ai.koryki.catalog.types.TypeDescriptorParser;
+import ai.koryki.measure.catalog.Measure;
+import ai.koryki.measure.catalog.MeasureCatalog;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;

@@ -15,6 +15,7 @@ import ai.koryki.iql.functions.FunctionKind;
 import ai.koryki.iql.functions.StandardFunctions;
 import ai.koryki.kql.KQLParser;
 import ai.koryki.kql.KQLReader;
+import ai.koryki.measure.Measures;
 import ai.koryki.measure.catalog.Measure;
 import ai.koryki.measure.catalog.MeasureCatalog;
 import java.util.ArrayList;
@@ -576,7 +577,7 @@ public final class AggRewriter {
                     model.getEntity(entityName)
                             .orElseThrow(() -> new Refusal("unknown entity '" + entityName + "'"));
             String tableName = entity.getTable() != null ? entity.getTable() : entity.getName();
-            Optional<Measure> measure = measures.find(tableName, name);
+            Optional<Measure> measure = Measures.find(measures, tableName, name);
             if (measure.isEmpty()) {
                 throw new Refusal(
                         "agg("

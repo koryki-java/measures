@@ -14,7 +14,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package ai.koryki.measure.catalog;
+package ai.koryki.measure;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.koryki.catalog.CatalogLoader;
 import ai.koryki.catalog.schema.Schema;
+import ai.koryki.measure.catalog.Measure;
+import ai.koryki.measure.catalog.MeasureCatalog;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
@@ -65,7 +67,7 @@ class MeasureCatalogTest {
                                 + " \"description\": \"d\", \"expression\": \"sum(amount)\","
                                 + " \"conceptRef\": \"money\" }");
 
-        Measure m = catalog.find("orders", "revenue").orElseThrow();
+        Measure m = Measures.find(catalog, "orders", "revenue").orElseThrow();
         assertEquals("sum(amount)", m.getExpression());
         assertEquals("Revenue", m.getLabel());
         assertEquals("c", m.getComment());
@@ -77,9 +79,9 @@ class MeasureCatalogTest {
     void aTableWithoutMeasuresHasNone() {
         MeasureCatalog catalog = read("{ \"name\": \"n\", \"expression\": \"count(*)\" }");
 
-        assertTrue(catalog.measuresOf("notes").isEmpty());
-        assertTrue(new MeasureCatalog().isEmpty());
-        assertTrue(catalog.find("orders", "nothing").isEmpty());
+        assertTrue(Measures.of(catalog, "notes").isEmpty());
+        assertTrue(Measures.isEmpty(new MeasureCatalog()));
+        assertTrue(Measures.find(catalog, "orders", "nothing").isEmpty());
     }
 
     @Test
@@ -90,7 +92,8 @@ class MeasureCatalogTest {
 
         MeasureCatalog catalog = MeasureCatalogLoader.read(new ByteArrayInputStream(json), SCHEMA);
 
-        assertEquals("count(*)", catalog.find("orders", "n").orElseThrow().getExpression());
+        assertEquals(
+                "count(*)", Measures.find(catalog, "orders", "n").orElseThrow().getExpression());
     }
 
     @Test
@@ -104,16 +107,27 @@ class MeasureCatalogTest {
         MeasureCatalogLoader.write(catalog, file);
         MeasureCatalog again = MeasureCatalogLoader.read(Files.readString(file.toPath()), SCHEMA);
 
-        Measure m = again.find("orders", "orders_count").orElseThrow();
+        Measure m = Measures.find(again, "orders", "orders_count").orElseThrow();
         assertEquals("count(*)", m.getExpression());
         assertEquals("INTEGER", m.getConcept().getTypeFamily());
+    }
+
+    @Test
+    void theFileHasTheTablesAndNothingDerived() {
+        String json =
+                MeasureCatalogLoader.toJson(
+                        Measures.add(new MeasureCatalog(), "orders", new Measure("n", "count(*)")));
+
+        assertTrue(!json.contains("empty"), json);
+        // and what is written is read back
+        assertEquals(1, Measures.of(MeasureCatalogLoader.read(json, SCHEMA), "orders").size());
     }
 
     @Test
     void whatIsNotSaidIsNotWritten() {
         String json =
                 MeasureCatalogLoader.toJson(
-                        new MeasureCatalog().add("orders", new Measure("n", "count(*)")));
+                        Measures.add(new MeasureCatalog(), "orders", new Measure("n", "count(*)")));
 
         assertTrue(json.contains("\"expression\""));
         assertTrue(!json.contains("label") && !json.contains("concept"));
@@ -128,8 +142,8 @@ class MeasureCatalogTest {
 
         MeasureCatalog copy = MeasureCopy.deepCopy(catalog);
 
-        Measure original = catalog.measuresOf("orders").get(0);
-        Measure copied = copy.measuresOf("orders").get(0);
+        Measure original = Measures.of(catalog, "orders").get(0);
+        Measure copied = Measures.of(copy, "orders").get(0);
         assertNotSame(original, copied);
         assertNotSame(original.getConcept(), copied.getConcept());
         assertEquals("count(*)", copied.getExpression());
@@ -225,6 +239,6 @@ class MeasureCatalogTest {
                                 + " \"count(*)\" } ] } }",
                         SCHEMA);
 
-        assertEquals(1, catalog.measuresOf("notes").size());
+        assertEquals(1, Measures.of(catalog, "notes").size());
     }
 }

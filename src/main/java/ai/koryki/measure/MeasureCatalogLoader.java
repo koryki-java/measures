@@ -14,11 +14,12 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package ai.koryki.measure.catalog;
+package ai.koryki.measure;
 
 import ai.koryki.antlr.KorykiaiException;
 import ai.koryki.catalog.SchemaModule;
 import ai.koryki.catalog.schema.Schema;
+import ai.koryki.measure.catalog.MeasureCatalog;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import java.io.File;
 import java.io.IOException;
@@ -49,6 +50,9 @@ public final class MeasureCatalogLoader {
 
     public static MeasureCatalog read(String json, Schema schema) {
         MeasureCatalog catalog = JSON.readValue(json, MeasureCatalog.class);
+        if (catalog.getTables() == null) {
+            catalog.setTables(new java.util.LinkedHashMap<>());
+        }
         MeasureCheck.check(schema, catalog);
         return catalog;
     }

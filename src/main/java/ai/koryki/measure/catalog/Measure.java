@@ -31,14 +31,14 @@ import ai.koryki.catalog.schema.Concept;
  *
  * <p><b>Names.</b> A measure and a column of one table share one namespace: the name of a measure
  * is never the name of a column of the same table, whatever the case, and names are unique among
- * the measures of a table. {@link MeasureCheck} sees to it.
+ * the measures of a table. {@link ai.koryki.measure.MeasureCheck} sees to it.
  *
  * <p><b>The expression</b> is one aggregate expression over the columns of its table, written in
  * KQL: {@code sum(unit_price * quantity)}, {@code count(*)}. It is text from a file and is not
  * trusted: whoever puts it into a query parses it as an expression of its own first. A measure that
  * needs the rows of another table is not expressible here yet.
  *
- * <p>Plain data. A copy is {@link MeasureCopy#deepCopy(Measure)}.
+ * <p>Plain data. A copy is {@link ai.koryki.measure.MeasureCopy#deepCopy(Measure)}.
  */
 public class Measure {
 
