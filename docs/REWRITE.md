@@ -207,6 +207,18 @@ and for a set operation the first branch that names a header. Checked: Ossie a11
 `with_block`, `subquery_scalar` (against plain SQL) and `union_branches`, on six dialects. A sub-query that reads an
 alias of the main query (correlated) is not supported.
 
+## Derived measures
+
+A measure whose expression reads other measures, `to_double(agg(emp.sum_sal)) / agg(dept.dept_count)`
+on `emp`, is expanded in the rewriter, not stored as a layer of its own. Each `agg(entity.measure)`
+in it is bound to the one alias of that entity in the query and registered as an ordinary use, so
+the layers, the identity and the fan-out protection are those of the measures it reads; the derived
+expression is then written over their merged columns, in parentheses. The output column's
+provenance lists every measure it reads (`~`, computed from). Refused: an entity that is not in the
+query or has several aliases, a column or a plain aggregate in the expression, and a derived measure
+reading a derived measure (which is also why there are no cycles). One aggregate over a join of
+several tables is a different feature and not covered.
+
 ## What the first version refuses
 
 A bracketed query, `FETCH DISTINCT`, a `ROLLUP` over an expression key,

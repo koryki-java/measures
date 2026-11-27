@@ -43,6 +43,15 @@ public final class MeasureCopy {
         copy.setDescription(measure.getDescription());
         copy.setExpression(measure.getExpression());
         copy.setConceptRef(measure.getConceptRef());
+        if (measure.getJoins() != null) {
+            copy.setJoins(
+                    measure.getJoins().stream()
+                            .map(
+                                    j ->
+                                            new ai.koryki.measure.catalog.MeasureJoin(
+                                                    j.getAlias(), j.getEntity(), j.getVia()))
+                            .toList());
+        }
         if (measure.getConcept() != null) {
             copy.setConcept(SchemaCopy.deepCopy(measure.getConcept()));
         }

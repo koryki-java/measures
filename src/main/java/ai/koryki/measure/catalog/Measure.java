@@ -35,8 +35,16 @@ import ai.koryki.catalog.schema.Concept;
  *
  * <p><b>The expression</b> is one aggregate expression over the columns of its table, written in
  * KQL: {@code sum(unit_price * quantity)}, {@code count(*)}. It is text from a file and is not
- * trusted: whoever puts it into a query parses it as an expression of its own first. A measure that
- * needs the rows of another table is not expressible here yet.
+ * trusted: whoever puts it into a query parses it as an expression of its own first.
+ *
+ * <p><b>A derived measure</b> is an expression over other measures, which may belong to other
+ * tables: {@code to_double(agg(emp.sum_sal)) / agg(dept.dept_count)}. Each measure it reads is
+ * written {@code agg(entity.measure)}, by the name of the entity, not of an alias; the query that
+ * reads the derived measure must have that entity once, and the measure is read through its alias.
+ * A derived measure reads no column and no aggregate of its own, and does not read another derived
+ * measure (so there are no cycles). It counts the rows of each table it reads once, as those
+ * measures do. A measure that needs the rows of another table in any other way (one aggregate over
+ * a join) is not expressible here yet.
  *
  * <p>Plain data. A copy is {@link ai.koryki.measure.MeasureCopy#deepCopy(Measure)}.
  */
@@ -65,6 +73,12 @@ public class Measure {
      * #conceptRef}, not both.
      */
     private Concept concept;
+
+    /**
+     * The tables whose columns the expression reads besides its own, each reached by a link to one
+     * row; null or empty if it reads only its own table.
+     */
+    private java.util.List<MeasureJoin> joins;
 
     public Measure() {}
 
@@ -127,5 +141,13 @@ public class Measure {
 
     public void setConcept(Concept concept) {
         this.concept = concept;
+    }
+
+    public java.util.List<MeasureJoin> getJoins() {
+        return joins;
+    }
+
+    public void setJoins(java.util.List<MeasureJoin> joins) {
+        this.joins = joins;
     }
 }

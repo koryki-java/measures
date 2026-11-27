@@ -23,7 +23,6 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -114,6 +113,110 @@ public final class AggRewriter {
      */
     public AggRewriter layered() {
         return new AggRewriter(schema, model, measures, functions, false);
+    }
+
+    /**
+     * The type of a measure, as the database will give it: the measure is read in a probe query
+     * over its entity (and the entities a derived measure reads, crossed in), the query is
+     * rewritten, and core types the column. Not a guess from the measure's concept: a derived
+     * measure's type follows from its expression ({@code to_double(a) / b}).
+     *
+     * @throws IllegalArgumentException if the measure is not found or the probe is refused
+     */
+    public ai.koryki.catalog.types.TypeDescriptor typeOf(String entity, String measure) {
+        Entity e =
+                model.getEntity(entity)
+                        .orElseThrow(
+                                () -> new IllegalArgumentException("unknown entity " + entity));
+        String table = e.getTable() != null ? e.getTable() : e.getName();
+        Measure m =
+                Measures.find(measures, table, measure)
+                        .orElseThrow(
+                                () ->
+                                        new IllegalArgumentException(
+                                                "table '"
+                                                        + table
+                                                        + "' has no measure '"
+                                                        + measure
+                                                        + "'"));
+        List<String> entities = new ArrayList<>(List.of(entity));
+        Matcher reads =
+                Pattern.compile("(?<![a-z_0-9])agg\\s*\\(\\s*([a-z_][a-z_0-9]*)\\.")
+                        .matcher(m.getExpression());
+        while (reads.find()) {
+            if (!entities.contains(reads.group(1))) {
+                entities.add(reads.group(1));
+            }
+        }
+        StringBuilder probe = new StringBuilder("FIND " + entities.get(0) + " p1");
+        for (int i = 1; i < entities.size(); i++) {
+            probe.append(", CROSS ").append(entities.get(i)).append(" p").append(i + 1);
+        }
+        probe.append(" FETCH agg(p1.").append(measure).append(") x");
+        Rewritten r = rewrite(probe.toString());
+        if (!r.ok()) {
+            throw new IllegalArgumentException(
+                    "measure '" + table + "." + measure + "': " + r.violations());
+        }
+        var transpiler =
+                new ai.koryki.kql.KQLTranspiler(
+                        r.kql(),
+                        new ai.koryki.iql.LinkResolver(
+                                java.util.Locale.ENGLISH, schema, model, true),
+                        functions);
+        var type =
+                transpiler.infos(ai.koryki.kql.HeaderInfo::new).stream()
+                        .findFirst()
+                        .map(ai.koryki.kql.HeaderInfo::getTypeDescriptor)
+                        .orElse(null);
+        if (type == null) {
+            throw new IllegalArgumentException(
+                    "measure '" + table + "." + measure + "': its type could not be derived");
+        }
+        return type;
+    }
+
+    // a call of agg(), not a longer name that ends in it
+    private static final Pattern DERIVED = Pattern.compile("(?<![a-z_0-9])agg\\s*\\(");
+
+    private static final java.util.Set<String> NUMERIC =
+            java.util.Set.of("INTEGER", "SMALLINT", "BIGINT", "DECIMAL", "FLOAT", "DOUBLE");
+
+    /**
+     * A measure that declares a concept must declare a type of the kind the expression gives:
+     * numbers for numbers, not text for a ratio. The precision inside the numbers is the concept's
+     * to say.
+     *
+     * @throws IllegalArgumentException for a measure whose declared type family is of another kind
+     *     than the derived one
+     */
+    public void checkDeclaredType(String entity, String measure) {
+        Entity e = model.getEntity(entity).orElseThrow();
+        String table = e.getTable() != null ? e.getTable() : e.getName();
+        Measure m = Measures.find(measures, table, measure).orElseThrow();
+        Concept c = m.getConcept();
+        if (c == null && m.getConceptRef() != null) {
+            c = concepts.concept(m.getConceptRef());
+        }
+        if (c == null || c.getTypeFamily() == null) {
+            return;
+        }
+        String derived = typeOf(entity, measure).getTypeFamily().name();
+        String declared = c.getTypeFamily();
+        boolean sameKind =
+                declared.equals(derived)
+                        || (NUMERIC.contains(declared) && NUMERIC.contains(derived));
+        if (!sameKind) {
+            throw new IllegalArgumentException(
+                    "measure '"
+                            + table
+                            + "."
+                            + measure
+                            + "': the concept says "
+                            + declared
+                            + ", the expression gives "
+                            + derived);
+        }
     }
 
     private KQLParser.QueryContext parse(String text) {
@@ -291,6 +394,8 @@ public final class AggRewriter {
         final List<String> identity = new ArrayList<>(); // attribute names
         final Map<String, String> args = new LinkedHashMap<>(); // attribute -> cN
         final List<Use> uses = new ArrayList<>();
+        // the tables its measures read besides their own, by "via entity": see MeasureJoin
+        final Map<String, Joined> joined = new LinkedHashMap<>();
 
         Layer(int n, String alias, Entity entity, Table table) {
             this.n = n;
@@ -304,6 +409,9 @@ public final class AggRewriter {
         }
     }
 
+    /** A table joined into a layer for a measure: the alias it has there, and its entity. */
+    private record Joined(String alias, Entity entity, Table table, String via) {}
+
     /** One measure read through one alias, and its output column {@code vN}. */
     private static final class Use {
         final Layer layer;
@@ -312,6 +420,8 @@ public final class AggRewriter {
         String expression; // over the layer: bare names replaced by x.cN
         String direct; // over the table's own alias: bare names replaced by alias.attribute
         String nullOf;
+        // the joined tables of the measure, by the alias its expression gives them
+        final Map<String, Joined> joins = new LinkedHashMap<>();
         KQLParser.FunctionContext call; // the first agg(...) that reads it, for the source map
 
         Use(Layer layer, Measure measure, int n) {
@@ -325,6 +435,13 @@ public final class AggRewriter {
         }
     }
 
+    /** A derived measure in one query: its expression, and the uses of the measures it reads. */
+    private record Derived(
+            Measure measure,
+            KQLParser.ExpressionContext expression,
+            KQLParser.QueryContext tree, // keeps the expression's token stream alive
+            Map<KQLParser.FunctionContext, Use> leaves) {}
+
     private final class Run {
         private final String kql;
         private final Mapped in;
@@ -334,6 +451,9 @@ public final class AggRewriter {
         private final Map<String, String> entityOfAlias = new LinkedHashMap<>();
         private final Map<String, Layer> layers = new LinkedHashMap<>();
         private final Map<String, Use> uses = new LinkedHashMap<>();
+        // measures that are made of other measures (agg(pet.pet_count) / agg(emp.emp_count)),
+        // by alias.name; they have no layer of their own, only the measures they read have
+        private final Map<String, Derived> derived = new LinkedHashMap<>();
         private final Map<String, OutputColumn> columns = new LinkedHashMap<>();
         // An optional link (+) in the source graph: a layer then holds NULL-padded rows.
         private boolean outer;
@@ -569,6 +689,15 @@ public final class AggRewriter {
             KQLParser.FieldContext field = call.argument(0).expression().field();
             String alias = field.alias.getText();
             String name = field.name.getText();
+            Measure m = lookup(alias, name);
+            if (isDerived(m)) {
+                derive(call, alias, name, m);
+            } else {
+                register(call, alias, name, m);
+            }
+        }
+
+        private Measure lookup(String alias, String name) {
             String entityName = entityOfAlias.get(alias);
             if (entityName == null) {
                 throw new Refusal("agg(" + alias + "." + name + "): unknown alias '" + alias + "'");
@@ -577,30 +706,105 @@ public final class AggRewriter {
                     model.getEntity(entityName)
                             .orElseThrow(() -> new Refusal("unknown entity '" + entityName + "'"));
             String tableName = entity.getTable() != null ? entity.getTable() : entity.getName();
-            Optional<Measure> measure = Measures.find(measures, tableName, name);
-            if (measure.isEmpty()) {
-                throw new Refusal(
-                        "agg("
-                                + alias
-                                + "."
-                                + name
-                                + "): table '"
-                                + tableName
-                                + "' has no measure '"
-                                + name
-                                + "'");
-            }
+            return Measures.find(measures, tableName, name)
+                    .orElseThrow(
+                            () ->
+                                    new Refusal(
+                                            "agg("
+                                                    + alias
+                                                    + "."
+                                                    + name
+                                                    + "): table '"
+                                                    + tableName
+                                                    + "' has no measure '"
+                                                    + name
+                                                    + "'"));
+        }
+
+        private void register(
+                KQLParser.FunctionContext call, String alias, String name, Measure measure) {
+            String entityName = entityOfAlias.get(alias);
+            Entity entity = model.getEntity(entityName).orElseThrow();
+            String tableName = entity.getTable() != null ? entity.getTable() : entity.getName();
             Layer layer =
                     layers.computeIfAbsent(
                             alias, a -> new Layer(layers.size() + 1, a, entity, table(tableName)));
             uses.computeIfAbsent(
                     alias + "." + name,
                     k -> {
-                        Use u = new Use(layer, measure.get(), uses.size() + 1);
+                        Use u = new Use(layer, measure, uses.size() + 1);
                         u.call = call;
                         layer.uses.add(u);
                         return u;
                     });
+        }
+
+        /** A measure whose expression reads measures: it holds agg() calls. */
+        private boolean isDerived(Measure m) {
+            return m.getExpression() != null && DERIVED.matcher(m.getExpression()).find();
+        }
+
+        /**
+         * Registers the measures a derived measure reads. Each is written {@code entity.measure};
+         * the entity must be in the query under exactly one alias, which is the one it is read
+         * through. A derived measure reading a derived measure is not supported.
+         */
+        private void derive(KQLParser.FunctionContext call, String alias, String name, Measure m) {
+            String where = "measure '" + name + "': ";
+            KQLParser.QueryContext q = parse("FIND t x FETCH " + m.getExpression());
+            var sel = q.set() == null ? null : q.set().select();
+            if (sel == null
+                    || sel.fetchClause() == null
+                    || sel.fetchClause().fetchItem().size() != 1
+                    || !sel.link().isEmpty()) {
+                throw new Refusal(where + "the expression is not one expression");
+            }
+            var e = sel.fetchClause().fetchItem(0).expression();
+            if (fieldOutsideAgg(e) || rawAggregate(e)) {
+                throw new Refusal(where + "a derived measure reads measures only, through agg()");
+            }
+            Map<KQLParser.FunctionContext, Use> leaves = new LinkedHashMap<>();
+            for (var inner : aggCalls(e)) {
+                var arg = inner.argument();
+                if (arg.size() != 1
+                        || arg.get(0).expression() == null
+                        || arg.get(0).expression().field() == null
+                        || arg.get(0).expression().getChildCount() != 1) {
+                    throw new Refusal(where + "agg() takes one measure, written entity.name");
+                }
+                var f = arg.get(0).expression().field();
+                String entity = f.alias.getText();
+                List<String> aliases =
+                        entityOfAlias.entrySet().stream()
+                                .filter(en -> entity.equals(en.getValue()))
+                                .map(Map.Entry::getKey)
+                                .toList();
+                // the measure is read through this alias: its own entity is bound to it, even when
+                // the query has the entity twice (a self-join)
+                if (entity.equals(entityOfAlias.get(alias))) {
+                    aliases = List.of(alias);
+                }
+                if (aliases.size() != 1) {
+                    throw new Refusal(
+                            where
+                                    + "it reads "
+                                    + entity
+                                    + "."
+                                    + f.name.getText()
+                                    + ", and the query has "
+                                    + (aliases.isEmpty() ? "no" : "several")
+                                    + " alias of '"
+                                    + entity
+                                    + "'");
+                }
+                Measure leaf = lookup(aliases.get(0), f.name.getText());
+                if (isDerived(leaf)) {
+                    throw new Refusal(where + "a derived measure cannot read a derived measure");
+                }
+                register(call, aliases.get(0), f.name.getText(), leaf);
+                leaves.put(inner, uses.get(aliases.get(0) + "." + f.name.getText()));
+            }
+            derived.put(alias + "." + name, new Derived(m, e, q, leaves));
         }
 
         private Table table(String name) {
@@ -631,9 +835,10 @@ public final class AggRewriter {
                     layer.identity.add(attribute(layer, c.getName()).getName());
                 }
                 for (Use u : layer.uses) {
+                    join(layer, u);
                     KQLParser.ExpressionContext e = parsed(u.measure);
-                    u.expression = expression(layer, e, false);
-                    u.direct = expression(layer, e, true);
+                    u.expression = expression(layer, u, e, false);
+                    u.direct = expression(layer, u, e, true);
                     u.nullOf = nullOf(layer, u, e);
                 }
             }
@@ -652,6 +857,67 @@ public final class AggRewriter {
                                                     + layer.table.getName()
                                                     + "' is not an attribute of entity '"
                                                     + layer.entity.getName()
+                                                    + "'"));
+        }
+
+        /** Sets up the tables a measure joins in its layer; each must lead to one row. */
+        private void join(Layer layer, Use u) {
+            if (u.measure.getJoins() == null) {
+                return;
+            }
+            for (var j : u.measure.getJoins()) {
+                String where =
+                        "measure '" + u.measure.getName() + "': join '" + j.getAlias() + "': ";
+                Entity entity =
+                        model.getEntity(j.getEntity())
+                                .orElseThrow(
+                                        () ->
+                                                new Refusal(
+                                                        where
+                                                                + "unknown entity '"
+                                                                + j.getEntity()
+                                                                + "'"));
+                Table table =
+                        table(entity.getTable() != null ? entity.getTable() : entity.getName());
+                if (!toOneTables(layer.table.getName(), table.getName())) {
+                    throw new Refusal(
+                            where
+                                    + "'"
+                                    + layer.table.getName()
+                                    + "' does not lead to one row of '"
+                                    + table.getName()
+                                    + "': a measure joins only tables its rows meet once");
+                }
+                String key = j.getVia() + " " + j.getEntity();
+                Joined joined =
+                        layer.joined.computeIfAbsent(
+                                key,
+                                k ->
+                                        new Joined(
+                                                prefix
+                                                        + "aggj"
+                                                        + layer.n
+                                                        + "_"
+                                                        + (layer.joined.size() + 1),
+                                                entity,
+                                                table,
+                                                j.getVia()));
+                u.joins.put(j.getAlias(), joined);
+            }
+        }
+
+        private String joinedColumn(Joined j, String attribute) {
+            return j.entity().getAttributes().stream()
+                    .filter(a -> attribute.equals(a.getName()))
+                    .findFirst()
+                    .map(a -> a.getName())
+                    .orElseThrow(
+                            () ->
+                                    new Refusal(
+                                            "'"
+                                                    + attribute
+                                                    + "' is not an attribute of entity '"
+                                                    + j.entity().getName()
                                                     + "'"));
         }
 
@@ -675,8 +941,17 @@ public final class AggRewriter {
             var e = select.fetchClause().fetchItem(0).expression();
             List<KQLParser.FieldContext> fields = new ArrayList<>();
             collect(e, KQLParser.FieldContext.class, fields);
-            if (!fields.isEmpty()) {
-                throw new Refusal(where + "write bare column names, not alias.name");
+            java.util.Set<String> declared = new java.util.HashSet<>();
+            if (m.getJoins() != null) {
+                m.getJoins().forEach(j -> declared.add(j.getAlias()));
+            }
+            for (var f : fields) {
+                if (!declared.contains(f.alias.getText())) {
+                    throw new Refusal(
+                            where
+                                    + "write bare column names; alias.name only for a table the"
+                                    + " measure joins");
+                }
             }
             if (!aggCalls(e).isEmpty()) {
                 throw new Refusal(where + "a measure cannot read another measure");
@@ -690,7 +965,8 @@ public final class AggRewriter {
         }
 
         /** The measure expression with its bare column names replaced by columns of the layer. */
-        private String expression(Layer layer, KQLParser.ExpressionContext e, boolean direct) {
+        private String expression(
+                Layer layer, Use use, KQLParser.ExpressionContext e, boolean direct) {
             // The pieces of the text to replace: a bare column name becomes a column of the layer;
             // with an optional link in the query, count() becomes the count of the identity, so
             // that
@@ -707,6 +983,19 @@ public final class AggRewriter {
                                 p.start.getStartIndex() - base,
                                 p.stop.getStopIndex() - base + 1,
                                 direct ? layer.alias + "." + name : "x." + layer.arg(name)));
+            }
+            List<KQLParser.FieldContext> fields = new ArrayList<>();
+            collect(e, KQLParser.FieldContext.class, fields);
+            for (var f : fields) {
+                Joined j = use.joins.get(f.alias.getText());
+                String column = joinedColumn(j, f.name.getText());
+                pieces.add(
+                        new Piece(
+                                f.start.getStartIndex() - base,
+                                f.stop.getStopIndex() - base + 1,
+                                direct
+                                        ? j.alias() + "." + column
+                                        : "x." + layer.arg(j.alias() + "." + column)));
             }
             if (outer && !direct) {
                 List<KQLParser.FunctionContext> fns = new ArrayList<>();
@@ -753,6 +1042,9 @@ public final class AggRewriter {
         private boolean fanOutFree() {
             if (layers.size() != 1 || outer || constantKey) {
                 return false;
+            }
+            if (layers.values().stream().anyMatch(l -> !l.joined.isEmpty())) {
+                return false; // the joined tables are the layer's, not the query's
             }
             String home = layers.values().iterator().next().alias;
             record Edge(String from, String to) {}
@@ -818,8 +1110,10 @@ public final class AggRewriter {
          * say so, because which of them the link picks is not decided here.
          */
         private boolean toOne(String near, String far) {
-            String a = tableOfAlias(near);
-            String b = tableOfAlias(far);
+            return toOneTables(tableOfAlias(near), tableOfAlias(far));
+        }
+
+        private boolean toOneTables(String a, String b) {
             if (a == null || b == null || a.equalsIgnoreCase(b)) {
                 return false;
             }
@@ -955,12 +1249,18 @@ public final class AggRewriter {
             List<String> blocks = new ArrayList<>();
             for (Layer l : ls) {
                 StringBuilder d = new StringBuilder();
-                d.append(prefix)
-                        .append("aggd")
-                        .append(l.n)
-                        .append(" AS (\n ")
-                        .append(graph)
-                        .append(filter);
+                d.append(prefix).append("aggd").append(l.n).append(" AS (\n ").append(graph);
+                for (Joined j : l.joined.values()) {
+                    d.append(", ")
+                            .append(l.alias)
+                            .append(" VIA ")
+                            .append(j.via())
+                            .append(" + ")
+                            .append(j.entity().getName())
+                            .append(" ")
+                            .append(j.alias());
+                }
+                d.append(filter);
                 d.append("\n FETCH DISTINCT ");
                 List<String> cols = new ArrayList<>();
                 for (int i = 0; i < l.identity.size(); i++) {
@@ -969,7 +1269,12 @@ public final class AggRewriter {
                 for (int i = 0; i < keys.size(); i++) {
                     cols.add(keys.get(i) + " k" + (i + 1));
                 }
-                l.args.forEach((attr, c) -> cols.add(l.alias + "." + attr + " " + c));
+                l.args.forEach(
+                        (attr, c) ->
+                                cols.add(
+                                        (attr.contains(".") ? attr : l.alias + "." + attr)
+                                                + " "
+                                                + c));
                 d.append(String.join(", ", cols)).append(")");
                 blocks.add(d.toString());
 
@@ -1168,16 +1473,14 @@ public final class AggRewriter {
                 }
                 if (header != null && !calls.isEmpty()) {
                     List<String> read =
-                            calls.stream()
-                                    .map(c -> tableOf(c) + "." + measureOf(c).getName())
-                                    .distinct()
-                                    .toList();
+                            calls.stream().flatMap(c -> readsOf(c).stream()).distinct().toList();
                     // exactly one measure, or computed from measures: round(agg(..), 2), a ratio
                     columns.put(
                             header,
                             calls.size() == 1
                                             && e.function() == calls.get(0)
                                             && e.getChildCount() == 1
+                                            && read.size() == 1
                                     ? OutputColumn.measure(read.get(0))
                                     : new OutputColumn(read, shownText(e, calls)));
                 }
@@ -1220,12 +1523,55 @@ public final class AggRewriter {
             return uses.get(f.alias.getText() + "." + f.name.getText());
         }
 
+        private Derived derivedOf(KQLParser.FunctionContext call) {
+            var f = call.argument(0).expression().field();
+            return derived.get(f.alias.getText() + "." + f.name.getText());
+        }
+
         private Measure measureOf(KQLParser.FunctionContext call) {
-            return useOf(call).measure;
+            Derived d = derivedOf(call);
+            return d != null ? d.measure() : useOf(call).measure;
         }
 
         private String tableOf(KQLParser.FunctionContext call) {
+            if (derivedOf(call) != null) {
+                var f = call.argument(0).expression().field();
+                return tableOfAlias(f.alias.getText());
+            }
             return useOf(call).layer.table.getName();
+        }
+
+        /** The measures a call reads: itself, or what a derived measure is made of. */
+        private List<String> readsOf(KQLParser.FunctionContext call) {
+            Derived d = derivedOf(call);
+            if (d == null) {
+                return List.of(tableOf(call) + "." + measureOf(call).getName());
+            }
+            return d.leaves().values().stream()
+                    .map(u -> u.layer.table.getName() + "." + u.measure.getName())
+                    .distinct()
+                    .toList();
+        }
+
+        private String columnOf(Use u) {
+            return direct ? u.direct : rollup ? "r." + u.column() : "max(t." + u.column() + ")";
+        }
+
+        /** The expression of a derived measure, the measures it reads replaced by their columns. */
+        private String expandDerived(Derived d) {
+            var e = d.expression();
+            int base = e.start.getStartIndex();
+            String src = e.start.getInputStream().getText(Interval.of(base, e.stop.getStopIndex()));
+            StringBuilder sb = new StringBuilder();
+            int at = 0;
+            List<KQLParser.FunctionContext> calls = new ArrayList<>(d.leaves().keySet());
+            calls.sort(Comparator.comparingInt(c -> c.start.getStartIndex()));
+            for (var c : calls) {
+                sb.append(src, at, c.start.getStartIndex() - base)
+                        .append(columnOf(d.leaves().get(c)));
+                at = c.stop.getStopIndex() + 1 - base;
+            }
+            return "(" + sb.append(src.substring(at)) + ")";
         }
 
         /** The text of a node with every agg(...) call replaced by the merged column. */
@@ -1243,11 +1589,9 @@ public final class AggRewriter {
                         .append(
                                 anchor(
                                         call,
-                                        direct
-                                                ? useOf(call).direct
-                                                : rollup
-                                                        ? "r." + useOf(call).column()
-                                                        : "max(t." + useOf(call).column() + ")"));
+                                        derivedOf(call) != null
+                                                ? expandDerived(derivedOf(call))
+                                                : columnOf(useOf(call))));
                 at = to;
             }
             return sb.append(verbatim(base + at, src.substring(at))).toString();

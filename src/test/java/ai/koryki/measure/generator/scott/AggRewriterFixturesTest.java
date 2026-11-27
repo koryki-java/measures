@@ -116,6 +116,141 @@ class AggRewriterFixturesTest extends FixturesTest {
                 false);
     }
 
+    /** A derived measure (spike): a stored ratio of two measures of two tables. */
+    private AggRewriter withDerived(String expression) {
+        var copy = new ai.koryki.measure.catalog.MeasureCatalog();
+        measures.getTables()
+                .forEach((k, v) -> copy.getTables().put(k, new java.util.ArrayList<>(v)));
+        ai.koryki.measure.Measures.add(
+                copy, "emp", new ai.koryki.measure.catalog.Measure("sal_per_dept", expression));
+        return new AggRewriter(schema, model, copy);
+    }
+
+    @Test
+    void aDerivedMeasureIsItsExpressionOverTheMeasuresItReads() {
+        AggRewriter r = withDerived("to_double(agg(emp.sum_sal)) / agg(dept.dept_count)");
+        String stored =
+                "FIND dept d, d VIA same_department emp e FETCH agg(e.sal_per_dept) sal_per_dept";
+        String written =
+                "FIND dept d, d VIA same_department emp e"
+                        + " FETCH (to_double(agg(e.sum_sal)) / agg(d.dept_count)) sal_per_dept";
+        var a = r.rewrite(stored);
+        var b = r.rewrite(written);
+        org.junit.jupiter.api.Assertions.assertTrue(a.ok(), () -> "" + a.violations());
+        org.junit.jupiter.api.Assertions.assertEquals(b.kql(), a.kql());
+        assertPlainOrLayered(r, stored, false);
+    }
+
+    @Test
+    void theTypeOfAMeasureIsWhatItsExpressionGives() {
+        AggRewriter r = withDerived("to_double(agg(emp.sum_sal)) / agg(dept.dept_count)");
+        org.junit.jupiter.api.Assertions.assertEquals(
+                "FLOAT", r.typeOf("emp", "sal_per_dept").getTypeFamily().name());
+        org.junit.jupiter.api.Assertions.assertEquals(
+                "INTEGER", r.typeOf("emp", "emp_count").getTypeFamily().name());
+        // a declared concept of another kind than the expression
+        var bad =
+                new ai.koryki.measure.catalog.Measure(
+                        "bad", "agg(emp.sum_sal) / agg(emp.emp_count)");
+        var c = new ai.koryki.catalog.schema.Concept();
+        c.setTypeFamily("TEXT");
+        bad.setConcept(c);
+        var copy = new ai.koryki.measure.catalog.MeasureCatalog();
+        measures.getTables()
+                .forEach((k, v) -> copy.getTables().put(k, new java.util.ArrayList<>(v)));
+        ai.koryki.measure.Measures.add(copy, "emp", bad);
+        var rb = new AggRewriter(schema, model, copy);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class, () -> rb.checkDeclaredType("emp", "bad"));
+        r.checkDeclaredType("emp", "sal_per_dept");
+    }
+
+    @Test
+    void aDerivedMeasureNeedsItsEntityOnceInTheQuery() {
+        AggRewriter r = withDerived("to_double(agg(emp.sum_sal)) / agg(dept.dept_count)");
+        var none = r.rewrite("FIND emp e FETCH agg(e.sal_per_dept) x");
+        org.junit.jupiter.api.Assertions.assertFalse(none.ok());
+    }
+
+    private AggRewriter withJoinMeasure(String expression, String via, String entity) {
+        var copy = new ai.koryki.measure.catalog.MeasureCatalog();
+        measures.getTables()
+                .forEach((k, v) -> copy.getTables().put(k, new java.util.ArrayList<>(v)));
+        var m = new ai.koryki.measure.catalog.Measure("sal_x", expression);
+        m.setJoins(List.of(new ai.koryki.measure.catalog.MeasureJoin("d", entity, via)));
+        var c = new ai.koryki.catalog.schema.Concept();
+        c.setTypeFamily("DECIMAL");
+        m.setConcept(c);
+        ai.koryki.measure.Measures.add(copy, "emp", m);
+        return new AggRewriter(schema, model, copy);
+    }
+
+    private String csv(String kql) {
+        String[] lines =
+                new ai.koryki.databases.cases.CSVAssert<>(engine, kql, "probe")
+                        .getCsv()
+                        .split("\\R");
+        return lines[0]
+                + "\n"
+                + java.util.stream.Stream.of(lines)
+                        .skip(1)
+                        .sorted()
+                        .collect(java.util.stream.Collectors.joining("\n"));
+    }
+
+    private void sameRowsAsPlainQuery(AggRewriter r, String withAgg, String plain) {
+        var rw = r.rewrite(withAgg);
+        org.junit.jupiter.api.Assertions.assertTrue(rw.ok(), () -> "" + rw.violations());
+        org.junit.jupiter.api.Assertions.assertEquals(csv(plain), csv(rw.kql()), rw.kql());
+    }
+
+    @Test
+    void aMeasureCanReadColumnsOfATableItMeetsOnce() {
+        AggRewriter r = withJoinMeasure("sum(sal * d.deptno)", "same_department", "dept");
+        // the joined table need not be in the query
+        sameRowsAsPlainQuery(
+                r,
+                "FIND emp e FETCH agg(e.sal_x) x",
+                "FIND emp e, e VIA same_department dept d FETCH sum(e.sal * d.deptno) x");
+        // or be, as a dimension
+        sameRowsAsPlainQuery(
+                r,
+                "FIND dept d, d VIA same_department emp e FETCH d.dname dname, agg(e.sal_x) x",
+                "FIND dept d, d VIA same_department emp e"
+                        + " FETCH d.dname dname, sum(e.sal * d.deptno) x");
+        // a fan-out of the query does not count an employee twice: as with the employees alone
+        sameRowsAsPlainQuery(
+                r,
+                "FIND emp e, e VIA same_owner + pet p FETCH e.job job, agg(e.sal_x) x",
+                "FIND emp e, e VIA same_department dept d FETCH e.job job,"
+                        + " sum(e.sal * d.deptno) x");
+    }
+
+    @Test
+    void aMeasureCannotJoinATableItMeetsManyTimes() {
+        AggRewriter r = withJoinMeasure("sum(d.age)", "same_owner", "pet");
+        var rw = r.rewrite("FIND emp e FETCH agg(e.sal_x) x");
+        org.junit.jupiter.api.Assertions.assertFalse(rw.ok());
+        org.junit.jupiter.api.Assertions.assertTrue(
+                rw.violations().toString().contains("does not lead to one row"),
+                rw.violations().toString());
+    }
+
+    @Test
+    void aDerivedMeasureIsBoundToTheAliasItIsReadThroughInASelfJoin() {
+        AggRewriter r = withDerived("to_double(agg(emp.sum_sal)) / agg(dept.dept_count)");
+        var rw =
+                r.rewrite(
+                        "FIND dept d, d VIA same_department emp e, e VIA same_manager emp m"
+                                + " FETCH agg(e.sal_per_dept) x");
+        org.junit.jupiter.api.Assertions.assertTrue(rw.ok(), () -> "" + rw.violations());
+        var by =
+                r.rewrite(
+                        "FIND dept d, d VIA same_department emp e, e VIA same_manager emp m"
+                                + " FETCH to_double(agg(e.sum_sal)) / agg(d.dept_count) x");
+        org.junit.jupiter.api.Assertions.assertEquals(csv(by.kql()), csv(rw.kql()));
+    }
+
     @Override
     protected AggRewriter rewriter() {
         return rewriter;
